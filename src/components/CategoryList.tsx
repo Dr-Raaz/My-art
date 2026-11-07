@@ -33,44 +33,44 @@ export const CategoryList: React.FC<CategoryListProps> = ({
   const totalPublished = artworks.filter(a => a.isPublished).length;
 
   return (
-    <section id="categories-section" className="py-8 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between mb-6 gap-2">
+    <section id="categories-section" className="py-5 sm:py-8 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="flex flex-col sm:flex-row sm:items-end justify-between mb-4 sm:mb-6 gap-1.5 sm:gap-2">
         <div>
-          <span className="text-xs font-bold uppercase tracking-wider text-purple-600">
+          <span className="text-[11px] sm:text-xs font-bold uppercase tracking-wider text-purple-600">
             Explore Themes
           </span>
-          <h2 className="text-2xl sm:text-3xl font-bold text-slate-800 font-['Fredoka']">
+          <h2 className="text-xl sm:text-3xl font-bold text-slate-800 font-['Fredoka']">
             Color by Category
           </h2>
         </div>
-        <p className="text-sm text-slate-500 font-medium">
+        <p className="text-xs sm:text-sm text-slate-500 font-medium">
           Choose a theme to find the pictures you love
         </p>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3.5 sm:gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5 sm:gap-4">
         {/* "All" button card */}
         <button
           onClick={() => onSelectCategory(null)}
-          className={`p-4 rounded-2xl text-left border transition-all duration-200 cursor-pointer flex flex-col justify-between group ${
+          className={`p-3 sm:p-4 rounded-2xl text-left border transition-all duration-200 cursor-pointer flex flex-col justify-between group ${
             selectedCategoryId === null
-              ? 'bg-purple-600 text-white border-purple-600 shadow-md shadow-purple-200 scale-[1.02]'
+              ? 'bg-purple-600 text-white border-purple-600 shadow-md shadow-purple-200 scale-[1.01]'
               : 'bg-white text-slate-700 border-purple-100 hover:border-purple-300 hover:shadow-xs hover:scale-[1.01]'
           }`}
           aria-pressed={selectedCategoryId === null}
         >
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-2 sm:mb-3">
             <div
-              className={`w-11 h-11 rounded-xl flex items-center justify-center text-xl ${
+              className={`w-9 h-9 sm:w-11 sm:h-11 rounded-xl flex items-center justify-center ${
                 selectedCategoryId === null
                   ? 'bg-white/20 text-white'
                   : 'bg-purple-100 text-purple-600 group-hover:scale-110 transition-transform'
               }`}
             >
-              <Layers className="w-6 h-6" />
+              <Layers className="w-4 h-4 sm:w-6 sm:h-6" />
             </div>
             <span
-              className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+              className={`text-[10px] sm:text-xs font-bold px-1.5 sm:px-2 py-0.5 rounded-full ${
                 selectedCategoryId === null ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-600'
               }`}
             >
@@ -78,9 +78,9 @@ export const CategoryList: React.FC<CategoryListProps> = ({
             </span>
           </div>
           <div>
-            <h3 className="font-bold text-base leading-tight">All Themes</h3>
+            <h3 className="font-bold text-sm sm:text-base leading-tight">All Themes</h3>
             <p
-              className={`text-xs mt-0.5 ${
+              className={`text-[11px] sm:text-xs mt-0.5 ${
                 selectedCategoryId === null ? 'text-purple-100' : 'text-slate-400'
               }`}
             >
@@ -98,16 +98,16 @@ export const CategoryList: React.FC<CategoryListProps> = ({
             <button
               key={category.id}
               onClick={() => onSelectCategory(isSelected ? null : category.id)}
-              className={`p-4 rounded-2xl text-left border transition-all duration-200 cursor-pointer flex flex-col justify-between group ${
+              className={`p-3 sm:p-4 rounded-2xl text-left border transition-all duration-200 cursor-pointer flex flex-col justify-between group ${
                 isSelected
-                  ? 'bg-purple-600 text-white border-purple-600 shadow-md shadow-purple-200 scale-[1.02]'
+                  ? 'bg-purple-600 text-white border-purple-600 shadow-md shadow-purple-200 scale-[1.01]'
                   : 'bg-white text-slate-700 border-purple-100 hover:border-purple-300 hover:shadow-xs hover:scale-[1.01]'
               }`}
               aria-pressed={isSelected}
             >
-              <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center justify-between mb-2 sm:mb-3">
                 <div
-                  className={`w-11 h-11 rounded-xl flex items-center justify-center text-2xl ${
+                  className={`w-9 h-9 sm:w-11 sm:h-11 rounded-xl flex items-center justify-center text-xl sm:text-2xl ${
                     isSelected
                       ? 'bg-white/20 text-white'
                       : 'bg-purple-50 group-hover:scale-110 transition-transform'
@@ -116,7 +116,7 @@ export const CategoryList: React.FC<CategoryListProps> = ({
                   {category.icon || '🎨'}
                 </div>
                 <span
-                  className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+                  className={`text-[10px] sm:text-xs font-bold px-1.5 sm:px-2 py-0.5 rounded-full ${
                     isSelected ? 'bg-white/25 text-white' : 'bg-purple-50 text-purple-700'
                   }`}
                 >
@@ -124,9 +124,9 @@ export const CategoryList: React.FC<CategoryListProps> = ({
                 </span>
               </div>
               <div>
-                <h3 className="font-bold text-base leading-tight">{category.name}</h3>
+                <h3 className="font-bold text-sm sm:text-base leading-tight">{category.name}</h3>
                 <p
-                  className={`text-xs mt-0.5 truncate ${
+                  className={`text-[11px] sm:text-xs mt-0.5 truncate ${
                     isSelected ? 'text-purple-100' : 'text-slate-400'
                   }`}
                   title={category.description}

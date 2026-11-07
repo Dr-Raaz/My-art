@@ -24,6 +24,12 @@ import {
   clampPanOffset,
 } from '../utils/coordinateTransform';
 import {
+  getTouchDistance,
+  getTouchMidpoint,
+  calculateUntransformedCenter,
+  computePinchPanStep,
+} from '../utils/gestureMath';
+import {
   PaintBucket,
   Paintbrush,
   Eraser,
@@ -57,6 +63,18 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
   // Zoom & Pan state
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const zoomLevelRef = useRef<number>(1);
+  const panOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  const updateZoom = useCallback((newZoom: number) => {
+    setZoomLevel(newZoom);
+    zoomLevelRef.current = newZoom;
+  }, []);
+
+  const updatePan = useCallback((newPan: { x: number; y: number }) => {
+    setPanOffset(newPan);
+    panOffsetRef.current = newPan;
+  }, []);
 
   // Viewport & Canvas container refs
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -96,8 +114,66 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
   const lastArtworkPointRef = useRef<{ x: number; y: number } | null>(null);
   const saveTimeoutRef = useRef<number | null>(null);
 
-  // Touch pinch-to-zoom tracking
-  const touchDistanceRef = useRef<number | null>(null);
+  // Multi-pointer & Two-Finger Gesture tracking
+  const activePointersRef = useRef<Map<number, { clientX: number; clientY: number }>>(new Map());
+  const isTwoFingerGestureRef = useRef(false);
+  const lockedUntilAllFingersUpRef = useRef(false);
+  const strokeStartSnapshotRef = useRef<ImageData | null>(null);
+  const tapCandidateRef = useRef<{
+    pointerId: number;
+    clientX: number;
+    clientY: number;
+    time: number;
+  } | null>(null);
+
+  const gestureBaseRef = useRef<{
+    dist: number;
+    mid: { x: number; y: number };
+    zoom: number;
+    pan: { x: number; y: number };
+    untransformedCenter: { x: number; y: number };
+  } | null>(null);
+
+  // Prevent native browser page zoom/pinch inside canvas wrapper
+  useEffect(() => {
+    const wrapper = canvasWrapperRef.current;
+    if (!wrapper) return;
+
+    const preventDefaultTouch = (e: TouchEvent) => {
+      if (e.touches.length >= 2 || e.cancelable) {
+        e.preventDefault();
+      }
+    };
+
+    wrapper.addEventListener('touchstart', preventDefaultTouch, { passive: false });
+    wrapper.addEventListener('touchmove', preventDefaultTouch, { passive: false });
+
+    return () => {
+      wrapper.removeEventListener('touchstart', preventDefaultTouch);
+      wrapper.removeEventListener('touchmove', preventDefaultTouch);
+    };
+  }, []);
+
+  // Global window pointer listener to clean up released pointers outside viewport
+  useEffect(() => {
+    const handleGlobalPointerRelease = (e: PointerEvent) => {
+      if (activePointersRef.current.has(e.pointerId)) {
+        activePointersRef.current.delete(e.pointerId);
+        if (activePointersRef.current.size === 0) {
+          lockedUntilAllFingersUpRef.current = false;
+          isTwoFingerGestureRef.current = false;
+          gestureBaseRef.current = null;
+        }
+      }
+    };
+
+    window.addEventListener('pointerup', handleGlobalPointerRelease);
+    window.addEventListener('pointercancel', handleGlobalPointerRelease);
+    return () => {
+      window.removeEventListener('pointerup', handleGlobalPointerRelease);
+      window.removeEventListener('pointercancel', handleGlobalPointerRelease);
+    };
+  }, []);
 
   // Sync history state
   const updateHistoryState = useCallback(() => {
@@ -271,20 +347,19 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
 
   // Zoom handlers
   const handleZoomIn = () => {
-    setZoomLevel((prev) => Math.min(4, Math.round((prev + 0.5) * 10) / 10));
+    const next = Math.min(4, Math.round((zoomLevelRef.current + 0.5) * 10) / 10);
+    updateZoom(next);
   };
 
   const handleZoomOut = () => {
-    setZoomLevel((prev) => {
-      const next = Math.max(1, Math.round((prev - 0.5) * 10) / 10);
-      if (next === 1) setPanOffset({ x: 0, y: 0 });
-      return next;
-    });
+    const next = Math.max(1, Math.round((zoomLevelRef.current - 0.5) * 10) / 10);
+    updateZoom(next);
+    if (next === 1) updatePan({ x: 0, y: 0 });
   };
 
   const handleResetZoom = () => {
-    setZoomLevel(1);
-    setPanOffset({ x: 0, y: 0 });
+    updateZoom(1);
+    updatePan({ x: 0, y: 0 });
   };
 
   // Perform Flood Fill (with under-bleed edge coverage to eliminate white gaps)
@@ -318,7 +393,62 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
 
   // Pointer Down (Mouse, Touch, Stylus)
   const handlePointerDown = (e: React.PointerEvent) => {
-    // Check if middle click or Space key held for panning
+    // Record this pointer
+    activePointersRef.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+
+    // If currently locked because fingers from a multi-touch gesture are still being released, ignore
+    if (lockedUntilAllFingersUpRef.current) {
+      return;
+    }
+
+    // Check if a second finger just touched the artwork
+    if (activePointersRef.current.size >= 2) {
+      // Transition immediately into a two-finger navigation gesture
+      // 1. Revert any accidental brush or eraser stroke started by the first finger
+      if (isInteractingRef.current) {
+        if (strokeStartSnapshotRef.current && paintCanvasRef.current) {
+          const ctx = paintCanvasRef.current.getContext('2d');
+          if (ctx) {
+            ctx.putImageData(strokeStartSnapshotRef.current, 0, 0);
+          }
+        }
+        isInteractingRef.current = false;
+        lastArtworkPointRef.current = null;
+        strokeStartSnapshotRef.current = null;
+      }
+
+      // 2. Clear any pending bucket tap candidate (no accidental fill)
+      tapCandidateRef.current = null;
+
+      // 3. Clear single-finger pan if active
+      isPanningRef.current = false;
+
+      // 4. Initialize the two-finger gesture baseline
+      const pointers = Array.from(activePointersRef.current.values());
+      const p1 = pointers[0];
+      const p2 = pointers[1];
+      const dist = getTouchDistance(p1, p2);
+      const mid = getTouchMidpoint(p1, p2);
+
+      const wrapper = canvasWrapperRef.current;
+      if (wrapper) {
+        const rect = wrapper.getBoundingClientRect();
+        const untransformedCenter = calculateUntransformedCenter(rect, panOffsetRef.current);
+        gestureBaseRef.current = {
+          dist: Math.max(10, dist),
+          mid,
+          zoom: zoomLevelRef.current,
+          pan: { ...panOffsetRef.current },
+          untransformedCenter,
+        };
+        isTwoFingerGestureRef.current = true;
+        lockedUntilAllFingersUpRef.current = true;
+      }
+      return;
+    }
+
+    // Only 1 pointer is active!
+    // Check if middle click or Space/Pan tool
     const isMiddleClick = e.button === 1;
     const isPanMode = activeTool === 'pan' || isMiddleClick;
 
@@ -327,10 +457,12 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
       panStartRef.current = {
         clientX: e.clientX,
         clientY: e.clientY,
-        startPanX: panOffset.x,
-        startPanY: panOffset.y,
+        startPanX: panOffsetRef.current.x,
+        startPanY: panOffsetRef.current.y,
       };
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      try {
+        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {}
       return;
     }
 
@@ -339,43 +471,113 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
     const coords = getTransformedArtworkCoords(e.clientX, e.clientY);
     if (!coords) return;
 
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    try {
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {}
 
+    // If Bucket tool: queue tapCandidate to confirm on pointerup.
+    // If a second finger touches before release, candidate is discarded.
     if (activeTool === 'bucket') {
-      handleFloodFill(coords.x, coords.y);
+      tapCandidateRef.current = {
+        pointerId: e.pointerId,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        time: Date.now(),
+      };
       return;
     }
 
-    // Brush or Eraser
+    // Brush or Eraser:
+    // Take a snapshot of the paint canvas before this stroke starts,
+    // so if a second finger joins, we can revert cleanly without leaving marks.
+    const paintCanvas = paintCanvasRef.current;
+    if (paintCanvas) {
+      const ctx = paintCanvas.getContext('2d', { willReadFrequently: true });
+      if (ctx) {
+        strokeStartSnapshotRef.current = ctx.getImageData(0, 0, paintCanvas.width, paintCanvas.height);
+      }
+    }
+
     isInteractingRef.current = true;
     lastArtworkPointRef.current = coords;
 
-    const paintCanvas = paintCanvasRef.current;
-    if (!paintCanvas) return;
-    const ctx = paintCanvas.getContext('2d');
-    if (!ctx) return;
+    if (paintCanvas) {
+      const ctx = paintCanvas.getContext('2d');
+      if (ctx) {
+        ctx.save();
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = brushSize;
 
-    ctx.save();
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = brushSize;
+        if (activeTool === 'eraser') {
+          ctx.globalCompositeOperation = 'destination-out';
+        } else {
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.fillStyle = selectedColor;
+        }
 
-    if (activeTool === 'eraser') {
-      ctx.globalCompositeOperation = 'destination-out';
-    } else {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.fillStyle = selectedColor;
+        ctx.beginPath();
+        ctx.arc(coords.x, coords.y, brushSize / 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
     }
-
-    ctx.beginPath();
-    ctx.arc(coords.x, coords.y, brushSize / 2, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
   };
 
   // Pointer Move
   const handlePointerMove = (e: React.PointerEvent) => {
-    // Panning
+    // Update active pointer position
+    if (activePointersRef.current.has(e.pointerId)) {
+      activePointersRef.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+    }
+
+    // Two-finger pinch-to-zoom and pan in progress
+    if (isTwoFingerGestureRef.current && activePointersRef.current.size >= 2) {
+      const pointers = Array.from(activePointersRef.current.values());
+      const p1 = pointers[0];
+      const p2 = pointers[1];
+      const currentDist = getTouchDistance(p1, p2);
+      const currentMid = getTouchMidpoint(p1, p2);
+
+      const base = gestureBaseRef.current;
+      if (base && viewportRef.current) {
+        const step = computePinchPanStep({
+          currentDist,
+          currentMid,
+          baseDist: base.dist,
+          baseMid: base.mid,
+          baseZoom: base.zoom,
+          basePan: base.pan,
+          untransformedCenter: base.untransformedCenter,
+          displayWidth: displaySize.width,
+          displayHeight: displaySize.height,
+          containerWidth: viewportRef.current.clientWidth,
+          containerHeight: viewportRef.current.clientHeight,
+        });
+
+        updateZoom(step.zoom);
+        updatePan(step.pan);
+
+        // If limits (1.0 or 4.0) were reached, rebase to allow immediate reversal response
+        if (step.rebaseNeeded) {
+          gestureBaseRef.current = {
+            dist: currentDist,
+            mid: currentMid,
+            zoom: step.zoom,
+            pan: step.pan,
+            untransformedCenter: base.untransformedCenter,
+          };
+        }
+      }
+      return;
+    }
+
+    // If locked until all fingers lift, do not allow drawing or single-finger panning
+    if (lockedUntilAllFingersUpRef.current) {
+      return;
+    }
+
+    // Single-finger Pan (Hand tool)
     if (isPanningRef.current) {
       const dx = e.clientX - panStartRef.current.clientX;
       const dy = e.clientY - panStartRef.current.clientY;
@@ -385,18 +587,29 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
         const clamped = clampPanOffset(
           panStartRef.current.startPanX + dx,
           panStartRef.current.startPanY + dy,
-          zoomLevel,
+          zoomLevelRef.current,
           displaySize.width,
           displaySize.height,
           clientWidth,
           clientHeight
         );
-        setPanOffset(clamped);
+        updatePan(clamped);
       }
       return;
     }
 
-    // Drawing / Erasing
+    // If bucket tap candidate, check movement tolerance
+    if (tapCandidateRef.current && tapCandidateRef.current.pointerId === e.pointerId) {
+      const movedDist = Math.hypot(
+        e.clientX - tapCandidateRef.current.clientX,
+        e.clientY - tapCandidateRef.current.clientY
+      );
+      if (movedDist > 10) {
+        tapCandidateRef.current = null;
+      }
+    }
+
+    // Single-finger Drawing / Erasing
     if (!isInteractingRef.current || !lastArtworkPointRef.current) return;
 
     const coords = getTransformedArtworkCoords(e.clientX, e.clientY);
@@ -430,14 +643,45 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
 
   // Pointer Up / Cancel
   const handlePointerUp = (e: React.PointerEvent) => {
+    activePointersRef.current.delete(e.pointerId);
+
+    // If two-finger gesture was active, end it
+    if (isTwoFingerGestureRef.current) {
+      isTwoFingerGestureRef.current = false;
+      gestureBaseRef.current = null;
+    }
+
+    // If all fingers have left the screen, release the lock
+    if (activePointersRef.current.size === 0) {
+      lockedUntilAllFingersUpRef.current = false;
+    }
+
     if (isPanningRef.current) {
       isPanningRef.current = false;
       return;
     }
 
+    // Confirm bucket fill on single-finger tap release
+    if (
+      tapCandidateRef.current &&
+      tapCandidateRef.current.pointerId === e.pointerId &&
+      !lockedUntilAllFingersUpRef.current
+    ) {
+      const candidate = tapCandidateRef.current;
+      tapCandidateRef.current = null;
+      const coords = getTransformedArtworkCoords(candidate.clientX, candidate.clientY);
+      if (coords) {
+        handleFloodFill(coords.x, coords.y);
+      }
+      return;
+    }
+    tapCandidateRef.current = null;
+
+    // Finish brush/eraser stroke
     if (isInteractingRef.current) {
       isInteractingRef.current = false;
       lastArtworkPointRef.current = null;
+      strokeStartSnapshotRef.current = null;
       pushHistorySnapshot();
     }
   };
@@ -448,26 +692,23 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
     if (e.ctrlKey || e.metaKey || activeTool === 'pan') {
       // Zoom
       const delta = e.deltaY < 0 ? 0.25 : -0.25;
-      setZoomLevel((prev) => {
-        const next = Math.max(1, Math.min(4, Math.round((prev + delta) * 100) / 100));
-        if (next === 1) setPanOffset({ x: 0, y: 0 });
-        return next;
-      });
+      const next = Math.max(1, Math.min(4, Math.round((zoomLevelRef.current + delta) * 100) / 100));
+      updateZoom(next);
+      if (next === 1) updatePan({ x: 0, y: 0 });
     } else {
       // Pan
-      if (zoomLevel > 1 && viewportRef.current) {
+      if (zoomLevelRef.current > 1 && viewportRef.current) {
         const { clientWidth, clientHeight } = viewportRef.current;
-        setPanOffset((prev) =>
-          clampPanOffset(
-            prev.x - e.deltaX,
-            prev.y - e.deltaY,
-            zoomLevel,
-            displaySize.width,
-            displaySize.height,
-            clientWidth,
-            clientHeight
-          )
+        const clamped = clampPanOffset(
+          panOffsetRef.current.x - e.deltaX,
+          panOffsetRef.current.y - e.deltaY,
+          zoomLevelRef.current,
+          displaySize.width,
+          displaySize.height,
+          clientWidth,
+          clientHeight
         );
+        updatePan(clamped);
       }
     }
   };
@@ -775,6 +1016,7 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
           {/* Canvas Wrapper Element: Exactly sized to aspect ratio with CSS transform for smooth zoom and pan */}
           <div
             ref={canvasWrapperRef}
+            data-testid="canvas-wrapper"
             className={`relative bg-white rounded-3xl shadow-2xl border-4 border-purple-100 select-none transition-shadow ${
               activeTool === 'pan' ? 'cursor-grab active:cursor-grabbing' : 'cursor-crosshair'
             }`}

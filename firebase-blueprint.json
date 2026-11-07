@@ -1,0 +1,122 @@
+{
+  "entities": {
+    "Category": {
+      "title": "Category",
+      "description": "Art category grouping coloring pages.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the category."
+        },
+        "name": {
+          "type": "string",
+          "description": "Category name displayed to visitors.",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional description for category.",
+          "maxLength": 300
+        },
+        "icon": {
+          "type": "string",
+          "description": "Emoji or icon key representing the category.",
+          "maxLength": 50
+        },
+        "sortOrder": {
+          "type": "number",
+          "description": "Numerical order for sorting."
+        },
+        "isActive": {
+          "type": "boolean",
+          "description": "Whether the category is active and shown to the public."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when category was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp when category was last modified."
+        }
+      },
+      "required": ["id", "name", "isActive", "sortOrder"]
+    },
+    "Artwork": {
+      "title": "Artwork",
+      "description": "Black-and-white coloring page illustration.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique artwork ID."
+        },
+        "title": {
+          "type": "string",
+          "description": "Title of the artwork.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "description": {
+          "type": "string",
+          "description": "Short artwork description.",
+          "maxLength": 500
+        },
+        "categoryId": {
+          "type": "string",
+          "description": "Category document ID this artwork belongs to."
+        },
+        "imageUrl": {
+          "type": "string",
+          "description": "Public URL or Firebase Storage download URL."
+        },
+        "storagePath": {
+          "type": "string",
+          "description": "Path in Firebase Storage."
+        },
+        "difficulty": {
+          "type": "string",
+          "enum": ["easy", "medium", "hard"],
+          "description": "Difficulty level for children."
+        },
+        "isPublished": {
+          "type": "boolean",
+          "description": "Whether artwork is visible in public gallery."
+        },
+        "imageWidth": {
+          "type": "number",
+          "description": "Original image width in pixels."
+        },
+        "imageHeight": {
+          "type": "number",
+          "description": "Original image height in pixels."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp."
+        }
+      },
+      "required": ["id", "title", "categoryId", "imageUrl", "difficulty", "isPublished"]
+    }
+  },
+  "firestore": {
+    "/categories/{categoryId}": {
+      "schema": "Category",
+      "description": "Categories for coloring illustrations."
+    },
+    "/artworks/{artworkId}": {
+      "schema": "Artwork",
+      "description": "Artwork illustrations metadata."
+    }
+  }
+}

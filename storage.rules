@@ -1,0 +1,24 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    function isAdmin() {
+      return request.auth != null && (
+        request.auth.token.admin == true ||
+        request.auth.token.email == "raazprasai1996@gmail.com"
+      );
+    }
+
+    // Artworks storage path
+    match /artworks/{artworkId}/{allPaths=**} {
+      // Public visitors can read illustrations
+      allow read: if true;
+
+      // Only administrators can upload, replace, or delete artwork images
+      // Max 10MB file size, restricted to png, jpg, jpeg, webp
+      allow write: if isAdmin()
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('image/(png|jpeg|jpg|webp)');
+    }
+  }
+}

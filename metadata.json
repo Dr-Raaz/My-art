@@ -1,0 +1,6 @@
+{
+  "name": "Kids Coloring Studio",
+  "description": "Free, child-friendly online coloring platform with interactive flood fill, brush, eraser, 36 vibrant colors, local progress save, and administrator management dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

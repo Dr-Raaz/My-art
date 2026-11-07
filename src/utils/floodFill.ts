@@ -58,13 +58,13 @@ export function getLuminance(r: number, g: number, b: number, a: number): number
  * 0 = Free region (enclosed area or white background, fillable).
  *
  * @param original - The pixel buffer of the raw original illustration.
- * @param darknessThreshold - Luminance below which a pixel is considered an outline barrier (default 190).
- * @param safetyDilate - Expand barrier by 1 pixel to close micro antialiasing pinholes and prevent leakage.
+ * @param darknessThreshold - Luminance below which a pixel is considered an outline barrier (default 175).
+ * @param safetyDilate - Expand core barrier to bridge 1-pixel micro-gaps in anti-aliasing.
  */
 export function buildBarrierMask(
   original: PixelBuffer,
-  darknessThreshold = 190,
-  safetyDilate = 1
+  darknessThreshold = 175,
+  safetyDilate = 0
 ): Uint8Array {
   const { width, height, data } = original;
   const totalPixels = width * height;
@@ -84,7 +84,7 @@ export function buildBarrierMask(
     }
   }
 
-  // Step 2: Safety dilation to bridge 1-pixel micro-gaps in anti-aliasing
+  // Step 2: Optional micro-bridge for antialiasing pinholes
   if (safetyDilate <= 0) {
     return rawMask;
   }
@@ -95,18 +95,12 @@ export function buildBarrierMask(
     for (let x = 1; x < width - 1; x++) {
       const idx = rowOffset + x;
       if (rawMask[idx] === 1) {
-        // Mark 4-connected neighbors with safety barrier if they are somewhat dark
-        // to prevent color leaking through sub-pixel rasterization
-        const n1 = idx - 1;
-        const n2 = idx + 1;
-        const n3 = idx - width;
-        const n4 = idx + width;
-
-        for (const neighborIdx of [n1, n2, n3, n4]) {
+        const neighbors = [idx - 1, idx + 1, idx - width, idx + width];
+        for (const neighborIdx of neighbors) {
           if (rawMask[neighborIdx] === 0) {
             const pIdx = neighborIdx * 4;
             const lum = getLuminance(data[pIdx], data[pIdx + 1], data[pIdx + 2], data[pIdx + 3]);
-            if (lum < 235) {
+            if (lum < 200) {
               dilatedMask[neighborIdx] = 1;
             }
           }
@@ -146,9 +140,10 @@ export function createOutlineOverlay(original: PixelBuffer, threshold = 245): Im
       overlayData[i + 2] = 0;
       overlayData[i + 3] = 0;
     } else {
-      // Dark outlines: keep original color and modulate alpha based on darkness
-      // Darker pixels get full opacity (255), intermediate antialiased pixels get smooth alpha
-      const lineAlpha = Math.min(255, Math.max(0, Math.round((1 - lum / threshold) * 255)));
+      // Dark outlines: keep original dark color and modulate alpha smoothly
+      // Using a contrast-adjusted curve so lines are deep and edges taper cleanly
+      const darkness = 1 - (lum / threshold);
+      const lineAlpha = Math.min(255, Math.max(0, Math.round(Math.pow(darkness, 0.65) * 255)));
       overlayData[i] = r;
       overlayData[i + 1] = g;
       overlayData[i + 2] = b;
@@ -156,8 +151,10 @@ export function createOutlineOverlay(original: PixelBuffer, threshold = 245): Im
     }
   }
 
-  // Use global ImageData constructor if in browser or polyfill
-  return new ImageData(overlayData, width, height);
+  if (typeof ImageData !== 'undefined') {
+    return new ImageData(overlayData, width, height);
+  }
+  return { width, height, data: overlayData } as unknown as ImageData;
 }
 
 /**
@@ -181,9 +178,15 @@ function colorMatch(
 }
 
 /**
- * High-performance, non-blocking scanline Flood Fill algorithm.
+ * High-performance, gap-free Flood Fill algorithm.
  * Operates on the paint layer, guarded by the barrier mask so that colors
- * never spill past dark outlines.
+ * never spill into adjacent regions.
+ *
+ * To completely eliminate white gaps/halos between the filled region and the dark outlines:
+ * Once the region is filled, it performs an edge-aware color expansion (under-bleed) of
+ * up to bleedPixels strictly into outline barrier pixels. Because the outline overlay is
+ * rendered on top with smooth anti-aliased alpha, the paint layer cleanly tucks underneath
+ * the black outline, producing smooth, gap-free coloring.
  *
  * @param paintBuffer - The paint layer's ImageData to modify.
  * @param barrierMask - Pre-computed barrier mask (1 = outline barrier, 0 = fillable).
@@ -191,6 +194,7 @@ function colorMatch(
  * @param startY - Tapped Y coordinate.
  * @param fillColor - RGBA color tuple to fill with.
  * @param tolerance - Color comparison tolerance on the paint layer.
+ * @param bleedPixels - Pixels to tuck under outline barrier to eliminate white halos (default 2).
  */
 export function performFloodFill(
   paintBuffer: PixelBuffer,
@@ -198,7 +202,8 @@ export function performFloodFill(
   startX: number,
   startY: number,
   fillColor: [number, number, number, number],
-  tolerance = 24
+  tolerance = 24,
+  bleedPixels = 2
 ): FillBounds {
   const { width, height, data } = paintBuffer;
 
@@ -255,7 +260,6 @@ export function performFloodFill(
   const visited = new Uint8Array(width * height);
 
   // Coordinate queue (x, y stored as flat integer (y * width + x))
-  // Efficient typed array buffer for queue
   const queue = new Int32Array(width * height);
   let head = 0;
   let tail = 0;
@@ -268,6 +272,9 @@ export function performFloodFill(
   let minY = startY;
   let maxY = startY;
   let filledCount = 0;
+
+  // Track boundary pixels that touch the outline barrier for edge-bleed
+  const boundaryPixels: number[] = [];
 
   while (head < tail) {
     const curIdx = queue[head++];
@@ -288,28 +295,98 @@ export function performFloodFill(
     data[pIdx + 3] = fillA;
     filledCount++;
 
+    let touchesBarrier = false;
+
     // Check 4-directional neighbors
     const neighbors = [
-      { x: cx, y: cy - 1 }, // North
-      { x: cx, y: cy + 1 }, // South
-      { x: cx - 1, y: cy }, // West
-      { x: cx + 1, y: cy }, // East
+      curIdx - width, // North
+      curIdx + width, // South
+      curIdx - 1,     // West
+      curIdx + 1,     // East
     ];
 
-    for (const nb of neighbors) {
-      if (nb.x >= 0 && nb.x < width && nb.y >= 0 && nb.y < height) {
-        const nbIdx = nb.y * width + nb.x;
+    const cxCoords = [cx, cx, cx - 1, cx + 1];
+    const cyCoords = [cy - 1, cy + 1, cy, cy];
 
-        // Skip if already visited or is a barrier pixel
-        if (visited[nbIdx] === 0 && barrierMask[nbIdx] === 0) {
+    for (let i = 0; i < 4; i++) {
+      const nx = cxCoords[i];
+      const ny = cyCoords[i];
+      const nbIdx = neighbors[i];
+
+      if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+        if (barrierMask[nbIdx] === 1) {
+          touchesBarrier = true;
+        } else if (visited[nbIdx] === 0) {
           const nbPixelIdx = nbIdx * 4;
-          // Check if this pixel matches the original color of the target region
           if (colorMatch(data, nbPixelIdx, origR, origG, origB, origA, tolerance)) {
             visited[nbIdx] = 1;
             queue[tail++] = nbIdx;
           }
         }
+      } else {
+        touchesBarrier = true;
       }
+    }
+
+    if (touchesBarrier) {
+      boundaryPixels.push(curIdx);
+    }
+  }
+
+  // Step 2: Edge-aware under-bleed expansion into the barrier outline
+  // This eliminates white gaps without leaking into adjacent regions because
+  // it ONLY paints into barrier pixels (barrierMask === 1) that are not already
+  // painted by a different color.
+  if (filledCount > 0 && bleedPixels > 0) {
+    let currentEdge = boundaryPixels;
+    const bleedVisited = new Uint8Array(width * height);
+
+    for (let step = 0; step < bleedPixels; step++) {
+      const nextEdge: number[] = [];
+
+      for (let i = 0; i < currentEdge.length; i++) {
+        const curIdx = currentEdge[i];
+        const cx = curIdx % width;
+        const cy = Math.floor(curIdx / width);
+
+        // Check 8-connected neighbors so diagonal line gaps also don't have white pinholes
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = cx + dx;
+            const ny = cy + dy;
+
+            if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+              const nbIdx = ny * width + nx;
+
+              // Only expand into barrier pixels that haven't been visited in this bleed step
+              if (barrierMask[nbIdx] === 1 && bleedVisited[nbIdx] === 0) {
+                const pIdx = nbIdx * 4;
+                const pAlpha = data[pIdx + 3];
+
+                // If pixel is empty/transparent or was matching original background, tuck color underneath
+                if (pAlpha === 0 || colorMatch(data, pIdx, origR, origG, origB, origA, tolerance + 20)) {
+                  data[pIdx] = fillR;
+                  data[pIdx + 1] = fillG;
+                  data[pIdx + 2] = fillB;
+                  data[pIdx + 3] = fillA;
+
+                  bleedVisited[nbIdx] = 1;
+                  nextEdge.push(nbIdx);
+
+                  if (nx < minX) minX = nx;
+                  if (nx > maxX) maxX = nx;
+                  if (ny < minY) minY = ny;
+                  if (ny > maxY) maxY = ny;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      currentEdge = nextEdge;
+      if (currentEdge.length === 0) break;
     }
   }
 

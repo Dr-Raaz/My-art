@@ -19,9 +19,15 @@ import {
   clearColoringProgress,
 } from '../utils/indexedDB';
 import {
+  screenToArtworkCoords,
+  calculateFitDimensions,
+  clampPanOffset,
+} from '../utils/coordinateTransform';
+import {
   PaintBucket,
   Paintbrush,
   Eraser,
+  Hand,
   Undo2,
   Redo2,
   RotateCcw,
@@ -29,7 +35,7 @@ import {
   ArrowLeft,
   ZoomIn,
   ZoomOut,
-  Save,
+  Maximize2,
   CheckCircle2,
   AlertTriangle,
   Sparkles,
@@ -40,7 +46,7 @@ interface ColoringStudioProps {
   onBack: () => void;
 }
 
-export type ToolMode = 'bucket' | 'brush' | 'eraser';
+export type ToolMode = 'bucket' | 'brush' | 'eraser' | 'pan';
 
 export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack }) => {
   // Tool state
@@ -48,10 +54,21 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
   const [selectedColor, setSelectedColor] = useState<string>('#EF4444');
   const [brushSize, setBrushSize] = useState<number>(14);
 
-  // Canvas refs
-  const containerRef = useRef<HTMLDivElement>(null);
+  // Zoom & Pan state
+  const [zoomLevel, setZoomLevel] = useState<number>(1);
+  const [panOffset, setPanOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  // Viewport & Canvas container refs
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const canvasWrapperRef = useRef<HTMLDivElement>(null);
   const paintCanvasRef = useRef<HTMLCanvasElement>(null);
   const outlineCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Artwork dimensions in screen pixels at 1x
+  const [displaySize, setDisplaySize] = useState<{ width: number; height: number }>({
+    width: 600,
+    height: 600,
+  });
 
   // Raw image buffers
   const originalBufferRef = useRef<{ width: number; height: number; data: Uint8ClampedArray } | null>(null);
@@ -66,14 +83,23 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
   const [isLoading, setIsLoading] = useState(true);
   const [isSavedLocally, setIsSavedLocally] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
-  const [zoomLevel, setZoomLevel] = useState(1);
 
-  // Drawing state
-  const isDrawingRef = useRef(false);
-  const lastPointRef = useRef<{ x: number; y: number } | null>(null);
+  // Interaction refs
+  const isInteractingRef = useRef(false);
+  const isPanningRef = useRef(false);
+  const panStartRef = useRef<{ clientX: number; clientY: number; startPanX: number; startPanY: number }>({
+    clientX: 0,
+    clientY: 0,
+    startPanX: 0,
+    startPanY: 0,
+  });
+  const lastArtworkPointRef = useRef<{ x: number; y: number } | null>(null);
   const saveTimeoutRef = useRef<number | null>(null);
 
-  // Sync undo/redo button states
+  // Touch pinch-to-zoom tracking
+  const touchDistanceRef = useRef<number | null>(null);
+
+  // Sync history state
   const updateHistoryState = useCallback(() => {
     setCanUndo(historyRef.current.canUndo());
     setCanRedo(historyRef.current.canRedo());
@@ -110,6 +136,28 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
     triggerAutoSave();
   }, [updateHistoryState, triggerAutoSave]);
 
+  // Recalculate fit display dimensions whenever viewport resizes
+  const updateLayoutDimensions = useCallback(() => {
+    if (!viewportRef.current) return;
+    const { clientWidth, clientHeight } = viewportRef.current;
+    if (clientWidth <= 0 || clientHeight <= 0) return;
+
+    const artW = artwork.imageWidth || 800;
+    const artH = artwork.imageHeight || 800;
+
+    // Use responsive padding (tighter on mobile, generous on desktop)
+    const padding = window.innerWidth < 640 ? 12 : 24;
+    const fit = calculateFitDimensions(clientWidth, clientHeight, artW, artH, padding);
+    setDisplaySize(fit);
+  }, [artwork.imageWidth, artwork.imageHeight]);
+
+  useEffect(() => {
+    updateLayoutDimensions();
+    const handleResize = () => updateLayoutDimensions();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [updateLayoutDimensions]);
+
   // Initialize and load illustration
   useEffect(() => {
     let isMounted = true;
@@ -142,14 +190,14 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
         data: rawImageData.data,
       };
 
-      // 2. Compute the outline barrier mask (barriers for flood fill)
+      // 2. Build barrier mask (tight core barrier to prevent leaks while allowing gap-free underbleed)
       barrierMaskRef.current = buildBarrierMask(
         { width, height, data: rawImageData.data },
-        190, // Darkness threshold
-        1    // Safety dilation
+        175,
+        0
       );
 
-      // 3. Setup Outline Canvas (Top Layer)
+      // 3. Setup Outline Canvas (Top Layer with transparent background)
       const outlineCanvas = outlineCanvasRef.current;
       if (outlineCanvas) {
         outlineCanvas.width = width;
@@ -211,23 +259,35 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
     };
   }, [artwork.id, artwork.imageUrl, artwork.imageWidth, artwork.imageHeight, pushHistorySnapshot]);
 
-  // Coordinate mapping from client PointerEvent to canvas internal coordinate
-  const getCanvasCoords = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = paintCanvasRef.current;
-    if (!canvas) return { x: 0, y: 0 };
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
+  // Precise coordinate mapping from pointer screen position to artwork space
+  const getTransformedArtworkCoords = (clientX: number, clientY: number) => {
+    const wrapper = canvasWrapperRef.current;
+    const orig = originalBufferRef.current;
+    if (!wrapper || !orig) return null;
 
-    const x = Math.round((e.clientX - rect.left) * scaleX);
-    const y = Math.round((e.clientY - rect.top) * scaleY);
-    return {
-      x: Math.max(0, Math.min(canvas.width - 1, x)),
-      y: Math.max(0, Math.min(canvas.height - 1, y)),
-    };
+    const rect = wrapper.getBoundingClientRect();
+    return screenToArtworkCoords(clientX, clientY, rect, orig.width, orig.height);
   };
 
-  // Perform Flood Fill
+  // Zoom handlers
+  const handleZoomIn = () => {
+    setZoomLevel((prev) => Math.min(4, Math.round((prev + 0.5) * 10) / 10));
+  };
+
+  const handleZoomOut = () => {
+    setZoomLevel((prev) => {
+      const next = Math.max(1, Math.round((prev - 0.5) * 10) / 10);
+      if (next === 1) setPanOffset({ x: 0, y: 0 });
+      return next;
+    });
+  };
+
+  const handleResetZoom = () => {
+    setZoomLevel(1);
+    setPanOffset({ x: 0, y: 0 });
+  };
+
+  // Perform Flood Fill (with under-bleed edge coverage to eliminate white gaps)
   const handleFloodFill = (targetX: number, targetY: number) => {
     const paintCanvas = paintCanvasRef.current;
     const barrierMask = barrierMaskRef.current;
@@ -238,7 +298,6 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
 
     const { width, height } = paintCanvas;
     const currentPaintData = ctx.getImageData(0, 0, width, height);
-
     const fillColor = hexToRgba(selectedColor, 255);
 
     const fillResult = performFloodFill(
@@ -247,31 +306,49 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
       targetX,
       targetY,
       fillColor,
-      24 // Tolerance
+      24,
+      2 // 2px under-bleed eliminates white halos completely
     );
 
     if (fillResult.changed) {
-      // Apply the filled image data
       ctx.putImageData(currentPaintData, 0, 0);
       pushHistorySnapshot();
     }
   };
 
-  // Pointer Down
-  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
+  // Pointer Down (Mouse, Touch, Stylus)
+  const handlePointerDown = (e: React.PointerEvent) => {
+    // Check if middle click or Space key held for panning
+    const isMiddleClick = e.button === 1;
+    const isPanMode = activeTool === 'pan' || isMiddleClick;
+
+    if (isPanMode) {
+      isPanningRef.current = true;
+      panStartRef.current = {
+        clientX: e.clientX,
+        clientY: e.clientY,
+        startPanX: panOffset.x,
+        startPanY: panOffset.y,
+      };
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      return;
+    }
+
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+
+    const coords = getTransformedArtworkCoords(e.clientX, e.clientY);
+    if (!coords) return;
+
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
 
-    const { x, y } = getCanvasCoords(e);
-
     if (activeTool === 'bucket') {
-      handleFloodFill(x, y);
+      handleFloodFill(coords.x, coords.y);
       return;
     }
 
     // Brush or Eraser
-    isDrawingRef.current = true;
-    lastPointRef.current = { x, y };
+    isInteractingRef.current = true;
+    lastArtworkPointRef.current = coords;
 
     const paintCanvas = paintCanvasRef.current;
     if (!paintCanvas) return;
@@ -285,25 +362,46 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
 
     if (activeTool === 'eraser') {
       ctx.globalCompositeOperation = 'destination-out';
-      ctx.beginPath();
-      ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
-      ctx.fill();
     } else {
       ctx.globalCompositeOperation = 'source-over';
       ctx.fillStyle = selectedColor;
-      ctx.beginPath();
-      ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
-      ctx.fill();
     }
+
+    ctx.beginPath();
+    ctx.arc(coords.x, coords.y, brushSize / 2, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   };
 
   // Pointer Move
-  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!isDrawingRef.current || !lastPointRef.current) return;
-    e.preventDefault();
+  const handlePointerMove = (e: React.PointerEvent) => {
+    // Panning
+    if (isPanningRef.current) {
+      const dx = e.clientX - panStartRef.current.clientX;
+      const dy = e.clientY - panStartRef.current.clientY;
 
-    const { x, y } = getCanvasCoords(e);
+      if (viewportRef.current) {
+        const { clientWidth, clientHeight } = viewportRef.current;
+        const clamped = clampPanOffset(
+          panStartRef.current.startPanX + dx,
+          panStartRef.current.startPanY + dy,
+          zoomLevel,
+          displaySize.width,
+          displaySize.height,
+          clientWidth,
+          clientHeight
+        );
+        setPanOffset(clamped);
+      }
+      return;
+    }
+
+    // Drawing / Erasing
+    if (!isInteractingRef.current || !lastArtworkPointRef.current) return;
+
+    const coords = getTransformedArtworkCoords(e.clientX, e.clientY);
+    if (!coords) return;
+
     const paintCanvas = paintCanvasRef.current;
     if (!paintCanvas) return;
     const ctx = paintCanvas.getContext('2d');
@@ -322,20 +420,56 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
     }
 
     ctx.beginPath();
-    ctx.moveTo(lastPointRef.current.x, lastPointRef.current.y);
-    ctx.lineTo(x, y);
+    ctx.moveTo(lastArtworkPointRef.current.x, lastArtworkPointRef.current.y);
+    ctx.lineTo(coords.x, coords.y);
     ctx.stroke();
     ctx.restore();
 
-    lastPointRef.current = { x, y };
+    lastArtworkPointRef.current = coords;
   };
 
-  // Pointer Up / Leave
-  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!isDrawingRef.current) return;
-    isDrawingRef.current = false;
-    lastPointRef.current = null;
-    pushHistorySnapshot();
+  // Pointer Up / Cancel
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (isPanningRef.current) {
+      isPanningRef.current = false;
+      return;
+    }
+
+    if (isInteractingRef.current) {
+      isInteractingRef.current = false;
+      lastArtworkPointRef.current = null;
+      pushHistorySnapshot();
+    }
+  };
+
+  // Wheel zoom / pan
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey || activeTool === 'pan') {
+      // Zoom
+      const delta = e.deltaY < 0 ? 0.25 : -0.25;
+      setZoomLevel((prev) => {
+        const next = Math.max(1, Math.min(4, Math.round((prev + delta) * 100) / 100));
+        if (next === 1) setPanOffset({ x: 0, y: 0 });
+        return next;
+      });
+    } else {
+      // Pan
+      if (zoomLevel > 1 && viewportRef.current) {
+        const { clientWidth, clientHeight } = viewportRef.current;
+        setPanOffset((prev) =>
+          clampPanOffset(
+            prev.x - e.deltaX,
+            prev.y - e.deltaY,
+            zoomLevel,
+            displaySize.width,
+            displaySize.height,
+            clientWidth,
+            clientHeight
+          )
+        );
+      }
+    }
   };
 
   // Undo Action
@@ -395,7 +529,6 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
 
     const { width, height } = paintCanvas;
 
-    // Export canvas
     const exportCanvas = document.createElement('canvas');
     exportCanvas.width = width;
     exportCanvas.height = height;
@@ -415,7 +548,6 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
       exportCtx.drawImage(outlineCanvas, 0, 0);
     }
 
-    // Trigger download
     const link = document.createElement('a');
     link.download = `${artwork.title.toLowerCase().replace(/[^a-z0-9]/g, '_')}_colored.png`;
     link.href = exportCanvas.toDataURL('image/png');
@@ -423,117 +555,186 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
-      {/* Studio Top Navigation Bar */}
-      <header className="bg-white border-b border-purple-100 shadow-xs px-4 py-3 sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
-          {/* Back & Artwork Title */}
-          <div className="flex items-center gap-3">
-            <button
-              onClick={onBack}
-              className="p-2.5 rounded-2xl bg-purple-50 hover:bg-purple-100 text-purple-700 transition-colors cursor-pointer flex items-center gap-1.5 font-bold text-sm"
-              aria-label="Back to Gallery"
-            >
-              <ArrowLeft className="w-5 h-5" />
-              <span className="hidden sm:inline">Gallery</span>
-            </button>
+    <div className="h-screen max-h-screen flex flex-col bg-slate-50 overflow-hidden select-none">
+      {/* Studio Top Navigation Bar (Compact & Responsive) */}
+      <header className="h-14 sm:h-16 bg-white border-b border-purple-100 shadow-xs px-3 sm:px-6 flex items-center justify-between gap-2 shrink-0 z-30">
+        {/* Back Button & Title */}
+        <div className="flex items-center gap-2.5 min-w-0">
+          <button
+            onClick={onBack}
+            className="p-2 sm:px-3 sm:py-2 rounded-2xl bg-purple-50 hover:bg-purple-100 text-purple-700 transition-colors cursor-pointer flex items-center gap-1.5 font-bold text-xs sm:text-sm shrink-0"
+            aria-label="Back to Gallery"
+          >
+            <ArrowLeft className="w-4 h-4 sm:w-5 sm:h-5" />
+            <span className="hidden sm:inline">Gallery</span>
+          </button>
 
-            <div>
-              <h1 className="text-lg sm:text-xl font-bold text-slate-800 font-['Fredoka'] truncate max-w-[200px] sm:max-w-xs md:max-w-md">
-                {artwork.title}
-              </h1>
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-semibold text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full">
-                  {artwork.difficulty}
+          <div className="min-w-0">
+            <h1 className="text-sm sm:text-base md:text-lg font-bold text-slate-800 font-['Fredoka'] truncate max-w-[140px] sm:max-w-xs md:max-w-md">
+              {artwork.title}
+            </h1>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] font-semibold text-purple-600 bg-purple-50 px-1.5 py-0.2 rounded-full uppercase">
+                {artwork.difficulty}
+              </span>
+              {isSavedLocally && (
+                <span className="text-[10px] font-medium text-emerald-600 flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" />
+                  <span className="hidden md:inline">Saved locally</span>
                 </span>
-                {isSavedLocally && (
-                  <span className="text-[11px] font-medium text-emerald-600 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" />
-                    <span className="hidden sm:inline">Saved locally</span>
-                  </span>
-                )}
-              </div>
+              )}
             </div>
           </div>
+        </div>
 
-          {/* Quick Actions (Reset, Download) */}
-          <div className="flex items-center gap-2">
+        {/* Center / Action Controls: Zoom HUD & Undo/Redo (Visible in header on small screens) */}
+        <div className="flex items-center gap-1.5 sm:gap-2">
+          {/* Zoom Controls HUD */}
+          <div className="flex items-center bg-slate-100/90 rounded-2xl p-1 gap-1 text-slate-700">
             <button
-              onClick={() => setShowResetConfirm(true)}
-              className="p-2.5 rounded-2xl border border-slate-200 text-slate-600 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200 transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold"
-              title="Reset Coloring"
-              aria-label="Reset colors"
+              onClick={handleZoomOut}
+              disabled={zoomLevel <= 1}
+              className="p-1.5 rounded-xl hover:bg-white text-slate-600 disabled:opacity-40 disabled:hover:bg-transparent cursor-pointer transition-colors"
+              title="Zoom Out"
+              aria-label="Zoom Out"
             >
-              <RotateCcw className="w-4 h-4" />
-              <span className="hidden md:inline">Reset</span>
+              <ZoomOut className="w-4 h-4" />
             </button>
-
             <button
-              onClick={handleDownload}
-              className="px-4 py-2.5 rounded-2xl bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-700 hover:to-pink-600 text-white font-bold text-sm shadow-md shadow-purple-200 hover:shadow-lg transition-all cursor-pointer flex items-center gap-2"
-              aria-label="Download Finished Artwork"
+              onClick={handleResetZoom}
+              className="px-2 py-0.5 rounded-xl text-xs font-bold hover:bg-white text-slate-700 cursor-pointer transition-colors"
+              title="Reset Zoom to 100%"
+              aria-label="Reset Zoom"
             >
-              <Download className="w-4 h-4" />
-              <span>Download</span>
+              {Math.round(zoomLevel * 100)}%
+            </button>
+            <button
+              onClick={handleZoomIn}
+              disabled={zoomLevel >= 4}
+              className="p-1.5 rounded-xl hover:bg-white text-slate-600 disabled:opacity-40 disabled:hover:bg-transparent cursor-pointer transition-colors"
+              title="Zoom In"
+              aria-label="Zoom In"
+            >
+              <ZoomIn className="w-4 h-4" />
             </button>
           </div>
+
+          {/* Undo / Redo in header for instant access on all screen sizes */}
+          <div className="flex items-center bg-slate-100/90 rounded-2xl p-1 gap-0.5">
+            <button
+              onClick={handleUndo}
+              disabled={!canUndo}
+              className="p-1.5 rounded-xl hover:bg-white text-purple-700 disabled:opacity-30 disabled:hover:bg-transparent cursor-pointer transition-colors"
+              title="Undo last stroke"
+              aria-label="Undo"
+            >
+              <Undo2 className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleRedo}
+              disabled={!canRedo}
+              className="p-1.5 rounded-xl hover:bg-white text-purple-700 disabled:opacity-30 disabled:hover:bg-transparent cursor-pointer transition-colors"
+              title="Redo stroke"
+              aria-label="Redo"
+            >
+              <Redo2 className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Reset Action */}
+          <button
+            onClick={() => setShowResetConfirm(true)}
+            className="p-2 rounded-2xl border border-slate-200 text-slate-600 hover:text-rose-600 hover:bg-rose-50 hover:border-rose-200 transition-colors cursor-pointer"
+            title="Reset colors"
+            aria-label="Reset colors"
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
+
+          {/* Download Action */}
+          <button
+            onClick={handleDownload}
+            className="px-3 sm:px-4 py-2 rounded-2xl bg-gradient-to-r from-purple-600 to-pink-500 hover:from-purple-700 hover:to-pink-600 text-white font-bold text-xs sm:text-sm shadow-md shadow-purple-200 transition-all cursor-pointer flex items-center gap-1.5"
+            aria-label="Download Finished Artwork"
+          >
+            <Download className="w-4 h-4" />
+            <span className="hidden sm:inline">Download</span>
+          </button>
         </div>
       </header>
 
-      {/* Main Studio Area */}
-      <div className="flex-1 max-w-7xl w-full mx-auto p-2 sm:p-4 md:p-6 flex flex-col lg:flex-row gap-4 sm:gap-6 items-start justify-center">
-        {/* Left / Top Toolbar (Tools, Undo/Redo, Brush Size) */}
-        <div className="w-full lg:w-44 bg-white rounded-3xl border border-purple-100 p-3.5 shadow-sm flex lg:flex-col gap-3 justify-between items-center shrink-0 lg:sticky lg:top-20 z-20">
-          {/* Tool Selectors */}
-          <div className="flex lg:flex-col gap-2 w-full">
+      {/* Main Studio Body: Workspace with Sidebar Toolbar & Centered Canvas Viewport */}
+      <div className="flex-1 flex flex-col md:flex-row min-h-0 relative overflow-hidden">
+        {/* Left Toolbar on Desktop & Tablet / Top Floating Bar on Mobile */}
+        <aside className="w-full md:w-20 lg:w-44 bg-white/95 backdrop-blur-md border-b md:border-b-0 md:border-r border-purple-100 p-2 sm:p-3 flex md:flex-col justify-between items-center gap-2 shrink-0 z-20 overflow-x-auto no-scrollbar">
+          {/* Tool Buttons */}
+          <div className="flex md:flex-col gap-2 w-full justify-center md:justify-start">
             <button
               onClick={() => setActiveTool('bucket')}
-              className={`flex-1 lg:w-full p-3 rounded-2xl font-bold text-xs sm:text-sm flex flex-col sm:flex-row items-center justify-center sm:justify-start gap-2 transition-all cursor-pointer ${
+              className={`p-2.5 lg:px-4 lg:py-3 rounded-2xl font-bold text-xs flex items-center justify-center lg:justify-start gap-2.5 transition-all cursor-pointer shrink-0 ${
                 activeTool === 'bucket'
                   ? 'bg-purple-600 text-white shadow-md shadow-purple-200'
                   : 'bg-purple-50 text-slate-700 hover:bg-purple-100'
               }`}
+              title="Magic Fill Tool: tap enclosed area to color"
               aria-label="Magic Paint Bucket Fill Tool"
               aria-pressed={activeTool === 'bucket'}
             >
               <PaintBucket className="w-5 h-5 shrink-0" />
-              <span>Fill</span>
+              <span className="hidden lg:inline">Fill</span>
             </button>
 
             <button
               onClick={() => setActiveTool('brush')}
-              className={`flex-1 lg:w-full p-3 rounded-2xl font-bold text-xs sm:text-sm flex flex-col sm:flex-row items-center justify-center sm:justify-start gap-2 transition-all cursor-pointer ${
+              className={`p-2.5 lg:px-4 lg:py-3 rounded-2xl font-bold text-xs flex items-center justify-center lg:justify-start gap-2.5 transition-all cursor-pointer shrink-0 ${
                 activeTool === 'brush'
                   ? 'bg-purple-600 text-white shadow-md shadow-purple-200'
                   : 'bg-purple-50 text-slate-700 hover:bg-purple-100'
               }`}
+              title="Freehand Brush Tool"
               aria-label="Freehand Brush Tool"
               aria-pressed={activeTool === 'brush'}
             >
               <Paintbrush className="w-5 h-5 shrink-0" />
-              <span>Brush</span>
+              <span className="hidden lg:inline">Brush</span>
             </button>
 
             <button
               onClick={() => setActiveTool('eraser')}
-              className={`flex-1 lg:w-full p-3 rounded-2xl font-bold text-xs sm:text-sm flex flex-col sm:flex-row items-center justify-center sm:justify-start gap-2 transition-all cursor-pointer ${
+              className={`p-2.5 lg:px-4 lg:py-3 rounded-2xl font-bold text-xs flex items-center justify-center lg:justify-start gap-2.5 transition-all cursor-pointer shrink-0 ${
                 activeTool === 'eraser'
                   ? 'bg-purple-600 text-white shadow-md shadow-purple-200'
                   : 'bg-purple-50 text-slate-700 hover:bg-purple-100'
               }`}
+              title="Eraser Tool: erases coloring without erasing black lines"
               aria-label="Eraser Tool"
               aria-pressed={activeTool === 'eraser'}
             >
               <Eraser className="w-5 h-5 shrink-0" />
-              <span>Eraser</span>
+              <span className="hidden lg:inline">Eraser</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTool(activeTool === 'pan' ? 'bucket' : 'pan')}
+              className={`p-2.5 lg:px-4 lg:py-3 rounded-2xl font-bold text-xs flex items-center justify-center lg:justify-start gap-2.5 transition-all cursor-pointer shrink-0 ${
+                activeTool === 'pan'
+                  ? 'bg-purple-600 text-white shadow-md shadow-purple-200'
+                  : 'bg-purple-50 text-slate-700 hover:bg-purple-100'
+              }`}
+              title="Hand Tool: Drag to pan around zoomed picture"
+              aria-label="Pan Tool"
+              aria-pressed={activeTool === 'pan'}
+            >
+              <Hand className="w-5 h-5 shrink-0" />
+              <span className="hidden lg:inline">Move</span>
             </button>
           </div>
 
-          {/* Brush/Eraser Size Slider (Visible when brush or eraser selected) */}
+          {/* Brush/Eraser Size Slider */}
           {(activeTool === 'brush' || activeTool === 'eraser') && (
-            <div className="hidden lg:flex flex-col gap-1.5 w-full bg-slate-50 p-3 rounded-2xl border border-slate-100">
-              <div className="flex items-center justify-between text-xs font-bold text-slate-600">
-                <span>Size</span>
+            <div className="flex md:flex-col items-center gap-2 bg-slate-50 p-2 sm:p-2.5 rounded-2xl border border-slate-100 w-auto md:w-full shrink-0">
+              <div className="flex items-center justify-between w-full text-[11px] font-bold text-slate-600">
+                <span className="hidden lg:inline">Size:</span>
                 <span>{brushSize}px</span>
               </div>
               <input
@@ -542,128 +743,106 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
                 max="48"
                 value={brushSize}
                 onChange={(e) => setBrushSize(Number(e.target.value))}
-                className="w-full accent-purple-600 cursor-pointer"
+                className="w-20 md:w-full accent-purple-600 cursor-pointer"
                 aria-label="Brush size slider"
               />
-              <div className="flex items-center justify-center pt-1">
-                <div
-                  className="rounded-full bg-slate-800 transition-all"
-                  style={{
-                    width: `${Math.min(28, brushSize)}px`,
-                    height: `${Math.min(28, brushSize)}px`,
-                  }}
-                />
-              </div>
             </div>
           )}
 
-          {/* Undo / Redo */}
-          <div className="flex lg:w-full gap-2 justify-center">
-            <button
-              onClick={handleUndo}
-              disabled={!canUndo}
-              className={`p-3 rounded-2xl flex-1 flex items-center justify-center transition-all ${
-                canUndo
-                  ? 'bg-purple-50 hover:bg-purple-100 text-purple-700 cursor-pointer shadow-xs'
-                  : 'bg-slate-100 text-slate-300 cursor-not-allowed'
-              }`}
-              title="Undo last action"
-              aria-label="Undo"
-            >
-              <Undo2 className="w-5 h-5" />
-            </button>
-
-            <button
-              onClick={handleRedo}
-              disabled={!canRedo}
-              className={`p-3 rounded-2xl flex-1 flex items-center justify-center transition-all ${
-                canRedo
-                  ? 'bg-purple-50 hover:bg-purple-100 text-purple-700 cursor-pointer shadow-xs'
-                  : 'bg-slate-100 text-slate-300 cursor-not-allowed'
-              }`}
-              title="Redo action"
-              aria-label="Redo"
-            >
-              <Redo2 className="w-5 h-5" />
-            </button>
+          {/* Active Tool Hint (Desktop only) */}
+          <div className="hidden lg:block text-center text-[10px] text-slate-400 font-medium px-2 py-1 leading-tight">
+            {activeTool === 'bucket' && 'Tap regions to fill without leakage'}
+            {activeTool === 'brush' && 'Freehand drawing'}
+            {activeTool === 'eraser' && 'Erase paint'}
+            {activeTool === 'pan' && 'Drag to move view'}
           </div>
-        </div>
+        </aside>
 
-        {/* Center: Layered Canvas Display */}
-        <div className="flex-1 w-full flex flex-col items-center">
-          {/* Mobile brush size bar */}
-          {(activeTool === 'brush' || activeTool === 'eraser') && (
-            <div className="lg:hidden w-full max-w-md bg-white p-2.5 rounded-2xl border border-purple-100 mb-3 flex items-center gap-3">
-              <span className="text-xs font-bold text-slate-600 whitespace-nowrap">
-                Size: {brushSize}px
-              </span>
-              <input
-                type="range"
-                min="4"
-                max="48"
-                value={brushSize}
-                onChange={(e) => setBrushSize(Number(e.target.value))}
-                className="w-full accent-purple-600"
-                aria-label="Mobile brush size slider"
-              />
+        {/* Center: Canvas Viewport (Supports Zoom & Pan & Fullscreen Touch) */}
+        <main
+          ref={viewportRef}
+          onWheel={handleWheel}
+          className="flex-1 relative overflow-hidden flex items-center justify-center p-2 sm:p-4 cursor-default min-h-0"
+          style={{ touchAction: 'none' }}
+        >
+          {isLoading && (
+            <div className="absolute inset-0 bg-white/90 backdrop-blur-xs flex flex-col items-center justify-center z-50">
+              <div className="w-12 h-12 rounded-full border-4 border-purple-200 border-t-purple-600 animate-spin mb-3" />
+              <p className="font-bold text-slate-700 text-sm font-['Fredoka']">Preparing coloring page...</p>
             </div>
           )}
 
-          {/* Canvas Viewport Container */}
+          {/* Canvas Wrapper Element: Exactly sized to aspect ratio with CSS transform for smooth zoom and pan */}
           <div
-            ref={containerRef}
-            className="relative w-full max-w-[540px] sm:max-w-[560px] aspect-square bg-white rounded-3xl border-4 border-purple-100 shadow-xl overflow-hidden flex items-center justify-center select-none"
-            style={{ touchAction: 'none' }}
+            ref={canvasWrapperRef}
+            className={`relative bg-white rounded-3xl shadow-2xl border-4 border-purple-100 select-none transition-shadow ${
+              activeTool === 'pan' ? 'cursor-grab active:cursor-grabbing' : 'cursor-crosshair'
+            }`}
+            style={{
+              width: `${displaySize.width}px`,
+              height: `${displaySize.height}px`,
+              transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoomLevel})`,
+              transformOrigin: 'center center',
+              willChange: 'transform',
+              touchAction: 'none',
+            }}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerLeave={handlePointerUp}
+            onPointerCancel={handlePointerUp}
           >
-            {isLoading && (
-              <div className="absolute inset-0 bg-white/90 backdrop-blur-xs flex flex-col items-center justify-center z-50">
-                <div className="w-12 h-12 rounded-full border-4 border-purple-200 border-t-purple-600 animate-spin mb-3" />
-                <p className="font-bold text-slate-700 text-sm">Preparing coloring page...</p>
-              </div>
-            )}
-
-            {/* Layer 1: Colored Paint Layer (Bottom) */}
+            {/* Layer 1: Colored Paint Canvas (Bottom Layer) */}
             <canvas
               ref={paintCanvasRef}
-              className="absolute inset-0 w-full h-full object-contain canvas-drawing cursor-crosshair z-10"
-              onPointerDown={handlePointerDown}
-              onPointerMove={handlePointerMove}
-              onPointerUp={handlePointerUp}
-              onPointerLeave={handlePointerUp}
-              onPointerCancel={handlePointerUp}
+              className="absolute inset-0 w-full h-full block rounded-[22px] canvas-drawing"
               data-testid="paint-canvas"
             />
 
-            {/* Layer 2: Original Illustration Outlines (Top Overlay) */}
+            {/* Layer 2: Original Illustration Outlines Canvas (Top Layer with transparency) */}
             <canvas
               ref={outlineCanvasRef}
-              className="absolute inset-0 w-full h-full object-contain pointer-events-none z-20"
+              className="absolute inset-0 w-full h-full block rounded-[22px] pointer-events-none z-10"
               data-testid="outline-canvas"
             />
           </div>
 
-          {/* Friendly Tooltip under canvas */}
-          <div className="mt-2.5 text-center text-xs font-semibold text-slate-500 flex items-center gap-1.5">
-            <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-            {activeTool === 'bucket' && 'Tap any section inside the picture to fill it with color!'}
-            {activeTool === 'brush' && 'Click and drag or touch to paint freely!'}
-            {activeTool === 'eraser' && 'Click and drag to erase your coloring without removing the black lines!'}
-          </div>
+          {/* Zoom notification badge if zoomed in */}
+          {zoomLevel > 1 && (
+            <div className="absolute top-3 right-3 bg-purple-900/80 text-white backdrop-blur-sm px-3 py-1 rounded-full text-xs font-bold shadow-md pointer-events-none z-20 flex items-center gap-1.5">
+              <span>Zoomed {Math.round(zoomLevel * 100)}%</span>
+              <span className="text-purple-300">• Move tool to pan</span>
+            </div>
+          )}
 
-          {/* 36-Color Palette Component */}
-          <div className="w-full max-w-[560px] mt-3">
+          {/* Desktop Palette Placement: Docked at bottom of viewport area */}
+          <div className="hidden md:block absolute bottom-3 left-1/2 -translate-x-1/2 w-full max-w-2xl px-4 z-20">
             <ColorPalette
               selectedColor={selectedColor}
               onSelectColor={(hex) => {
                 setSelectedColor(hex);
-                // If user was in eraser mode, switch back to brush or bucket
-                if (activeTool === 'eraser') {
+                if (activeTool === 'eraser' || activeTool === 'pan') {
                   setActiveTool('bucket');
                 }
               }}
+              isMobileFixed={false}
             />
           </div>
-        </div>
+        </main>
+      </div>
+
+      {/* Mobile Fixed Color Palette Dock (Always fixed at bottom above safe area, never moves with zoom/pan) */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 z-40">
+        <ColorPalette
+          selectedColor={selectedColor}
+          onSelectColor={(hex) => {
+            setSelectedColor(hex);
+            if (activeTool === 'eraser' || activeTool === 'pan') {
+              setActiveTool('bucket');
+            }
+          }}
+          isMobileFixed={true}
+        />
       </div>
 
       {/* Reset Confirmation Dialog */}
@@ -676,19 +855,19 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
             <h3 className="text-xl font-bold text-slate-800 font-['Fredoka'] mb-2">
               Start Over?
             </h3>
-            <p className="text-sm text-slate-500 mb-6 font-medium">
-              This will clear only your colors on this picture. The black outlines will remain safe!
+            <p className="text-xs sm:text-sm text-slate-500 mb-6 font-medium">
+              This will clear only your colors on this picture. The original black outlines will remain safe!
             </p>
             <div className="flex items-center gap-3">
               <button
                 onClick={() => setShowResetConfirm(false)}
-                className="flex-1 py-3 rounded-xl border border-slate-200 font-bold text-sm text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
+                className="flex-1 py-3 rounded-xl border border-slate-200 font-bold text-xs sm:text-sm text-slate-600 hover:bg-slate-50 transition-colors cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 onClick={handleReset}
-                className="flex-1 py-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-sm shadow-md transition-colors cursor-pointer"
+                className="flex-1 py-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs sm:text-sm shadow-md transition-colors cursor-pointer"
               >
                 Yes, Clear Colors
               </button>

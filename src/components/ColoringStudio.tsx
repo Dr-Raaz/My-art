@@ -24,6 +24,10 @@ import {
   clampPanOffset,
 } from '../utils/coordinateTransform';
 import {
+  calculatePaintCoverage,
+  generateCompositeThumbnail,
+} from '../utils/previewCoverage';
+import {
   getTouchDistance,
   getTouchMidpoint,
   calculateUntransformedCenter,
@@ -191,7 +195,21 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
       if (!paintCanvas) return;
       try {
         const dataUrl = paintCanvas.toDataURL('image/png');
-        await saveColoringProgress(artwork.id, dataUrl);
+        const previewDataUrl = generateCompositeThumbnail(paintCanvas, outlineCanvasRef.current, 500);
+
+        let paintedPercentage = 0;
+        const ctx = paintCanvas.getContext('2d');
+        if (ctx) {
+          const paintData = ctx.getImageData(0, 0, paintCanvas.width, paintCanvas.height).data;
+          paintedPercentage = calculatePaintCoverage(
+            paintData,
+            barrierMaskRef.current,
+            paintCanvas.width,
+            paintCanvas.height
+          );
+        }
+
+        await saveColoringProgress(artwork.id, dataUrl, previewDataUrl, paintedPercentage);
         setIsSavedLocally(true);
       } catch (err) {
         console.warn('Failed to auto-save to IndexedDB:', err);
@@ -221,9 +239,16 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
     const artW = artwork.imageWidth || 800;
     const artH = artwork.imageHeight || 800;
 
-    // Use responsive padding (tighter on mobile, generous on desktop)
-    const padding = window.innerWidth < 640 ? 12 : 24;
-    const fit = calculateFitDimensions(clientWidth, clientHeight, artW, artH, padding);
+    const isMobile = window.innerWidth < 768;
+    // On mobile screens, the fixed bottom palette takes ~115px.
+    // We reserve this space from available container height so the artwork never overlaps the palette.
+    const mobileBottomPaletteHeight = isMobile ? 120 : 0;
+    const availContainerHeight = Math.max(100, clientHeight - mobileBottomPaletteHeight);
+
+    // Responsive padding: 8px on mobile to maximize usable artwork display width, 24px on desktop/tablet
+    const paddingX = isMobile ? 8 : 24;
+    const paddingY = isMobile ? 8 : 24;
+    const fit = calculateFitDimensions(clientWidth, availContainerHeight, artW, artH, paddingX, paddingY);
     setDisplaySize(fit);
   }, [artwork.imageWidth, artwork.imageHeight]);
 
@@ -754,9 +779,17 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
     const ctx = paintCanvas.getContext('2d');
     if (!ctx) return;
 
+    if (saveTimeoutRef.current) {
+      window.clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = null;
+    }
+
     ctx.clearRect(0, 0, paintCanvas.width, paintCanvas.height);
+    const emptySnapshot = ctx.getImageData(0, 0, paintCanvas.width, paintCanvas.height);
     historyRef.current.clear();
-    pushHistorySnapshot();
+    historyRef.current.push(emptySnapshot);
+    updateHistoryState();
+
     await clearColoringProgress(artwork.id);
     setIsSavedLocally(false);
     setShowResetConfirm(false);
@@ -1003,7 +1036,7 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
         <main
           ref={viewportRef}
           onWheel={handleWheel}
-          className="flex-1 relative overflow-hidden flex items-center justify-center p-2 sm:p-4 cursor-default min-h-0"
+          className="flex-1 relative overflow-hidden flex flex-col md:flex-row items-center justify-start md:justify-center pt-2 sm:pt-3 md:pt-4 px-2 sm:px-4 pb-[125px] md:pb-4 cursor-default min-h-0"
           style={{ touchAction: 'none' }}
         >
           {isLoading && (

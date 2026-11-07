@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import type { Category, Artwork } from '../data/defaultArtworks';
-import { Search, Paintbrush, Sparkles, Filter, AlertCircle } from 'lucide-react';
+import { Search, Paintbrush, Sparkles, Filter, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { getAllSavedProgress, type SavedArtworkProgress } from '../utils/indexedDB';
 
 interface ArtworkGalleryProps {
   artworks: Artwork[];
@@ -13,6 +14,7 @@ interface ArtworkGalleryProps {
   selectedCategoryId: string | null;
   onSelectCategory: (categoryId: string | null) => void;
   onSelectArtwork: (artwork: Artwork) => void;
+  refreshKey?: number;
 }
 
 export const ArtworkGallery: React.FC<ArtworkGalleryProps> = ({
@@ -21,9 +23,29 @@ export const ArtworkGallery: React.FC<ArtworkGalleryProps> = ({
   selectedCategoryId,
   onSelectCategory,
   onSelectArtwork,
+  refreshKey = 0,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDifficulty, setSelectedDifficulty] = useState<string>('all');
+  const [savedProgressMap, setSavedProgressMap] = useState<Record<string, SavedArtworkProgress>>({});
+
+  // Load all saved progress from IndexedDB on mount and on refresh
+  useEffect(() => {
+    let isMounted = true;
+    getAllSavedProgress()
+      .then((map) => {
+        if (isMounted) {
+          setSavedProgressMap(map);
+        }
+      })
+      .catch((err) => {
+        console.warn('Failed to load saved coloring progress:', err);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [refreshKey]);
 
   // Map of active category IDs
   const activeCategoryIds = useMemo(() => {
@@ -144,6 +166,10 @@ export const ArtworkGallery: React.FC<ArtworkGalleryProps> = ({
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 gap-6 sm:gap-8">
           {filteredArtworks.map((artwork) => {
             const category = categoryMap.get(artwork.categoryId);
+            const saved = savedProgressMap[artwork.id];
+            const hasProgress = Boolean(saved && (saved.previewDataUrl || (saved.paintedPercentage && saved.paintedPercentage > 0)));
+            const thumbnailSrc = hasProgress && saved?.previewDataUrl ? saved.previewDataUrl : artwork.imageUrl;
+            const paintedPercentage = saved?.paintedPercentage ?? 0;
 
             return (
               <div
@@ -154,23 +180,32 @@ export const ArtworkGallery: React.FC<ArtworkGalleryProps> = ({
                 {/* Artwork Thumbnail Container */}
                 <div className="relative aspect-square w-full bg-slate-50 flex items-center justify-center p-6 overflow-hidden border-b border-slate-100">
                   <img
-                    src={artwork.imageUrl}
+                    src={thumbnailSrc}
                     alt={artwork.title}
                     className="w-full h-full object-contain filter group-hover:scale-105 transition-transform duration-300"
                     loading="lazy"
                   />
 
                   {/* Badges on top */}
-                  <div className="absolute top-3.5 left-3.5 flex items-center gap-2">
+                  <div className="absolute top-3.5 left-3.5 flex flex-wrap items-center gap-1.5 z-10 max-w-[70%]">
                     {category && (
-                      <span className="px-2.5 py-1 rounded-full bg-white/90 backdrop-blur-xs text-[11px] font-bold text-slate-700 shadow-xs border border-slate-200/60 flex items-center gap-1">
+                      <span className="px-2.5 py-1 rounded-full bg-white/95 backdrop-blur-xs text-[11px] font-bold text-slate-700 shadow-xs border border-slate-200/60 flex items-center gap-1">
                         <span>{category.icon || '🎨'}</span>
                         <span>{category.name}</span>
                       </span>
                     )}
+                    {hasProgress && paintedPercentage > 0 && (
+                      <span
+                        data-testid={`progress-badge-${artwork.id}`}
+                        className="px-2.5 py-1 rounded-full bg-gradient-to-r from-purple-600 to-pink-500 text-white text-[11px] font-bold shadow-xs flex items-center gap-1 animate-in fade-in"
+                      >
+                        <span className="w-1.5 h-1.5 rounded-full bg-amber-300 animate-pulse" />
+                        <span>{paintedPercentage}% colored</span>
+                      </span>
+                    )}
                   </div>
 
-                  <div className="absolute top-3.5 right-3.5">
+                  <div className="absolute top-3.5 right-3.5 z-10">
                     <span
                       className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider border shadow-xs ${
                         difficultyColors[artwork.difficulty]
@@ -181,10 +216,10 @@ export const ArtworkGallery: React.FC<ArtworkGalleryProps> = ({
                   </div>
 
                   {/* Hover Overlay Button */}
-                  <div className="absolute inset-0 bg-purple-900/10 backdrop-blur-[1px] opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                  <div className="absolute inset-0 bg-purple-900/10 backdrop-blur-[1px] opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10">
                     <span className="px-5 py-2.5 rounded-2xl bg-white text-purple-700 font-bold text-sm shadow-lg flex items-center gap-2 transform translate-y-2 group-hover:translate-y-0 transition-transform">
                       <Paintbrush className="w-4 h-4 text-pink-500" />
-                      <span>Start Coloring</span>
+                      <span>{hasProgress ? 'Continue Coloring' : 'Start Coloring'}</span>
                     </span>
                   </div>
                 </div>
@@ -198,6 +233,25 @@ export const ArtworkGallery: React.FC<ArtworkGalleryProps> = ({
                     <p className="text-xs sm:text-sm text-slate-500 mt-1 line-clamp-2 font-medium">
                       {artwork.description || 'Bring this black and white picture to life with vibrant colors!'}
                     </p>
+
+                    {/* Subtle mini progress bar if in progress */}
+                    {hasProgress && paintedPercentage > 0 && (
+                      <div className="mt-3">
+                        <div className="flex items-center justify-between text-[11px] font-bold text-purple-700 mb-1">
+                          <span className="flex items-center gap-1">
+                            <Sparkles className="w-3 h-3 text-pink-500" />
+                            <span>Coloring in progress</span>
+                          </span>
+                          <span>{paintedPercentage}%</span>
+                        </div>
+                        <div className="w-full bg-purple-100 rounded-full h-2 overflow-hidden">
+                          <div
+                            className="bg-gradient-to-r from-purple-500 to-pink-500 h-full rounded-full transition-all duration-500"
+                            style={{ width: `${paintedPercentage}%` }}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between">
@@ -214,7 +268,7 @@ export const ArtworkGallery: React.FC<ArtworkGalleryProps> = ({
                       className="px-4 py-2 rounded-xl bg-purple-50 hover:bg-purple-600 text-purple-700 hover:text-white font-bold text-xs transition-colors cursor-pointer flex items-center gap-1.5"
                     >
                       <Paintbrush className="w-3.5 h-3.5" />
-                      <span>Color Now</span>
+                      <span>{hasProgress ? 'Continue' : 'Color Now'}</span>
                     </button>
                   </div>
                 </div>

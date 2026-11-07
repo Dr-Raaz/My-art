@@ -10,6 +10,8 @@ const STORE_NAME = 'artwork_progress';
 export interface SavedArtworkProgress {
   artworkId: string;
   paintDataUrl: string; // Base64 data URL of the paint layer
+  previewDataUrl?: string; // Base64 composite preview (white bg + paint + outlines)
+  paintedPercentage?: number; // Approximate coverage 0-100%
   updatedAt: number;
 }
 
@@ -46,11 +48,13 @@ function getDb(): Promise<IDBDatabase> {
 }
 
 /**
- * Saves child's coloring paint layer for an artwork ID.
+ * Saves child's coloring paint layer, composite preview, and coverage for an artwork ID.
  */
 export async function saveColoringProgress(
   artworkId: string,
-  paintDataUrl: string
+  paintDataUrl: string,
+  previewDataUrl?: string,
+  paintedPercentage?: number
 ): Promise<void> {
   try {
     const db = await getDb();
@@ -60,6 +64,8 @@ export async function saveColoringProgress(
       const record: SavedArtworkProgress = {
         artworkId,
         paintDataUrl,
+        previewDataUrl,
+        paintedPercentage,
         updatedAt: Date.now(),
       };
       const request = store.put(record);
@@ -129,5 +135,34 @@ export async function getSavedArtworkIds(): Promise<string[]> {
     });
   } catch (err) {
     return [];
+  }
+}
+
+/**
+ * Loads all saved artwork progress entries mapped by artworkId.
+ * Fast, single-transaction retrieval for gallery view without individual queries.
+ */
+export async function getAllSavedProgress(): Promise<Record<string, SavedArtworkProgress>> {
+  try {
+    const db = await getDb();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction([STORE_NAME], 'readonly');
+      const store = transaction.objectStore(STORE_NAME);
+      const request = store.getAll();
+      request.onsuccess = () => {
+        const list = (request.result as SavedArtworkProgress[]) || [];
+        const map: Record<string, SavedArtworkProgress> = {};
+        for (const item of list) {
+          if (item && item.artworkId) {
+            map[item.artworkId] = item;
+          }
+        }
+        resolve(map);
+      };
+      request.onerror = () => reject(request.error);
+    });
+  } catch (err) {
+    console.warn('Could not load all progress from IndexedDB:', err);
+    return {};
   }
 }

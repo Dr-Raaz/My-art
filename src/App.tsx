@@ -32,6 +32,7 @@ export default function App() {
   const [selectedArtwork, setSelectedArtwork] = useState<Artwork | null>(null);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null);
   const [isAboutOpen, setIsAboutOpen] = useState(false);
+  const [galleryRefreshKey, setGalleryRefreshKey] = useState(0);
 
   // Admin auth state
   const [adminToken, setAdminToken] = useState<string | null>(null);
@@ -199,6 +200,7 @@ export default function App() {
         onBack={() => {
           setCurrentView('home');
           setSelectedArtwork(null);
+          setGalleryRefreshKey((k) => k + 1);
         }}
       />
     );
@@ -279,6 +281,7 @@ export default function App() {
           selectedCategoryId={selectedCategoryId}
           onSelectCategory={setSelectedCategoryId}
           onSelectArtwork={handleSelectArtwork}
+          refreshKey={galleryRefreshKey}
         />
       </main>
 

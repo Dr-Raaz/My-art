@@ -51,10 +51,11 @@ export function calculateFitDimensions(
   containerHeight: number,
   artworkWidth: number,
   artworkHeight: number,
-  padding = 16
+  paddingX = 16,
+  paddingY = paddingX
 ): { width: number; height: number } {
-  const availW = Math.max(100, containerWidth - padding * 2);
-  const availH = Math.max(100, containerHeight - padding * 2);
+  const availW = Math.max(100, containerWidth - paddingX * 2);
+  const availH = Math.max(100, containerHeight - paddingY * 2);
 
   const artworkAspect = artworkWidth / artworkHeight;
   const availAspect = availW / availH;

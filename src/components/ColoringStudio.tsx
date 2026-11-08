@@ -34,6 +34,10 @@ import {
   computePinchPanStep,
 } from '../utils/gestureMath';
 import {
+  EdgeNavigationGuard,
+  isEdgeNavigationZone,
+} from '../utils/edgeNavigationProtection';
+import {
   PaintBucket,
   Paintbrush,
   Eraser,
@@ -130,6 +134,9 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
     time: number;
   } | null>(null);
 
+  // Edge navigation swipe protection for Android/mobile system back gestures
+  const edgeGuardRef = useRef<EdgeNavigationGuard>(new EdgeNavigationGuard());
+
   const gestureBaseRef = useRef<{
     dist: number;
     mid: { x: number; y: number };
@@ -138,12 +145,20 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
     untransformedCenter: { x: number; y: number };
   } | null>(null);
 
-  // Prevent native browser page zoom/pinch inside canvas wrapper
+  // Prevent native browser page zoom/pinch inside canvas wrapper, but preserve native edge gestures
   useEffect(() => {
     const wrapper = canvasWrapperRef.current;
     if (!wrapper) return;
 
     const preventDefaultTouch = (e: TouchEvent) => {
+      // Never block or disable native navigation gestures if any touch is within the edge zone
+      const hasEdgeTouch = Array.from(e.touches).some((t) =>
+        isEdgeNavigationZone(t.clientX, window.innerWidth)
+      );
+      if (hasEdgeTouch) {
+        return;
+      }
+
       if (e.touches.length >= 2 || e.cancelable) {
         e.preventDefault();
       }
@@ -161,6 +176,7 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
   // Global window pointer listener to clean up released pointers outside viewport
   useEffect(() => {
     const handleGlobalPointerRelease = (e: PointerEvent) => {
+      edgeGuardRef.current.releasePointer(e.pointerId);
       if (activePointersRef.current.has(e.pointerId)) {
         activePointersRef.current.delete(e.pointerId);
         if (activePointersRef.current.size === 0) {
@@ -357,6 +373,7 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
       if (saveTimeoutRef.current) {
         window.clearTimeout(saveTimeoutRef.current);
       }
+      edgeGuardRef.current.clear();
     };
   }, [artwork.id, artwork.imageUrl, artwork.imageWidth, artwork.imageHeight, pushHistorySnapshot]);
 
@@ -418,6 +435,22 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
 
   // Pointer Down (Mouse, Touch, Stylus)
   const handlePointerDown = (e: React.PointerEvent) => {
+    // 0. Edge Navigation Gesture Check:
+    // Identify touch/pointer sequences that begin within the narrow left or right screen edge zone.
+    // Exclude the entire sequence from all canvas interactions (drawing, bucket fill, panning, zoom)
+    // without setting pointer capture or preventing native Android system/browser swipe-back gestures.
+    const isTouchOrPen = e.pointerType === 'touch' || e.pointerType === 'pen';
+    const isEdgeNav = edgeGuardRef.current.registerPointerDown(
+      e.pointerId,
+      e.clientX,
+      window.innerWidth,
+      isTouchOrPen
+    );
+
+    if (isEdgeNav) {
+      return;
+    }
+
     // Record this pointer
     activePointersRef.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
 
@@ -551,6 +584,11 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
 
   // Pointer Move
   const handlePointerMove = (e: React.PointerEvent) => {
+    // If this pointer sequence started in the edge navigation zone, exclude it completely
+    if (edgeGuardRef.current.isIgnored(e.pointerId)) {
+      return;
+    }
+
     // Update active pointer position
     if (activePointersRef.current.has(e.pointerId)) {
       activePointersRef.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
@@ -668,6 +706,12 @@ export const ColoringStudio: React.FC<ColoringStudioProps> = ({ artwork, onBack 
 
   // Pointer Up / Cancel
   const handlePointerUp = (e: React.PointerEvent) => {
+    // If this was an edge navigation sequence, release it and ignore
+    if (edgeGuardRef.current.releasePointer(e.pointerId)) {
+      activePointersRef.current.delete(e.pointerId);
+      return;
+    }
+
     activePointersRef.current.delete(e.pointerId);
 
     // If two-finger gesture was active, end it

@@ -27,6 +27,16 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json({ limit: '15mb' }));
 
+// Prevent aggressive browser/iframe caching of app code in AI Studio development
+app.use((_req, res, next) => {
+  if (process.env.NODE_ENV !== 'production') {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
+  next();
+});
+
 // Helper to get client IP for rate limiting
 function getClientIp(req: express.Request): string {
   const forwarded = req.headers['x-forwarded-for'];

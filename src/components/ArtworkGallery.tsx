@@ -15,6 +15,10 @@ interface ArtworkGalleryProps {
   onSelectCategory: (categoryId: string | null) => void;
   onSelectArtwork: (artwork: Artwork) => void;
   refreshKey?: number;
+  searchQuery?: string;
+  onSearchQueryChange?: (query: string) => void;
+  selectedDifficulty?: string;
+  onSelectedDifficultyChange?: (difficulty: string) => void;
 }
 
 export const ArtworkGallery: React.FC<ArtworkGalleryProps> = ({
@@ -24,10 +28,32 @@ export const ArtworkGallery: React.FC<ArtworkGalleryProps> = ({
   onSelectCategory,
   onSelectArtwork,
   refreshKey = 0,
+  searchQuery: externalSearchQuery,
+  onSearchQueryChange,
+  selectedDifficulty: externalDifficulty,
+  onSelectedDifficultyChange,
 }) => {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedDifficulty, setSelectedDifficulty] = useState<string>('all');
+  const [internalSearchQuery, setInternalSearchQuery] = useState('');
+  const [internalSelectedDifficulty, setInternalSelectedDifficulty] = useState<string>('all');
   const [savedProgressMap, setSavedProgressMap] = useState<Record<string, SavedArtworkProgress>>({});
+
+  const searchQuery = externalSearchQuery !== undefined ? externalSearchQuery : internalSearchQuery;
+  const setSearchQuery = (val: string) => {
+    if (onSearchQueryChange) {
+      onSearchQueryChange(val);
+    } else {
+      setInternalSearchQuery(val);
+    }
+  };
+
+  const selectedDifficulty = externalDifficulty !== undefined ? externalDifficulty : internalSelectedDifficulty;
+  const setSelectedDifficulty = (val: string) => {
+    if (onSelectedDifficultyChange) {
+      onSelectedDifficultyChange(val);
+    } else {
+      setInternalSelectedDifficulty(val);
+    }
+  };
 
   // Load all saved progress from IndexedDB on mount and on refresh
   useEffect(() => {
@@ -161,9 +187,9 @@ export const ArtworkGallery: React.FC<ArtworkGalleryProps> = ({
         </div>
       </div>
 
-      {/* Gallery Grid: 1 column on <380px, 2 columns on >=380px, 3 columns on tablet/desktop */}
+      {/* Gallery Grid: 2 columns on mobile, 3 columns on tablet, 4 columns on xl desktop */}
       {filteredArtworks.length > 0 ? (
-        <div className="grid grid-cols-1 min-[380px]:grid-cols-2 md:grid-cols-3 lg:grid-cols-3 gap-3.5 sm:gap-6 lg:gap-8">
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2.5 sm:gap-5 lg:gap-6 xl:gap-8">
           {filteredArtworks.map((artwork) => {
             const category = categoryMap.get(artwork.categoryId);
             const saved = savedProgressMap[artwork.id];
@@ -178,7 +204,7 @@ export const ArtworkGallery: React.FC<ArtworkGalleryProps> = ({
                 className="bg-white rounded-2xl sm:rounded-3xl border border-purple-100 overflow-hidden shadow-xs hover:shadow-xl hover:border-purple-300 hover:translate-y-[-4px] transition-all duration-200 cursor-pointer group flex flex-col"
               >
                 {/* Artwork Thumbnail Container */}
-                <div className="relative aspect-square w-full bg-slate-50 flex items-center justify-center p-3 sm:p-6 overflow-hidden border-b border-slate-100">
+                <div className="relative aspect-square w-full bg-slate-50 flex items-center justify-center p-2 sm:p-5 overflow-hidden border-b border-slate-100">
                   <img
                     src={thumbnailSrc}
                     alt={artwork.title}

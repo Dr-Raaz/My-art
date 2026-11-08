@@ -468,7 +468,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#faf8ff] overflow-x-hidden relative">
-      {/* Smooth Direction-Aware Full-Screen Coloring Studio Overlay */}
+      {/* Smooth Direction-Aware Full-Screen My Art Studio Overlay */}
       {isStudioMounted && (
         <div
           className="fixed inset-0 z-50 bg-slate-50 overflow-hidden will-change-transform"

@@ -20,7 +20,7 @@ export const Footer: React.FC<FooterProps> = ({ onOpenAbout, onNavigateAdmin }) 
             <Palette className="w-5 h-5" />
           </div>
           <div>
-            <p className="font-bold text-slate-800 font-['Fredoka']">Kids Coloring Studio</p>
+            <p className="font-bold text-slate-800 font-['Fredoka']">My Art Studio</p>
             <p className="text-xs text-slate-400">
               Creative coloring for young artists everywhere.
             </p>
@@ -52,7 +52,7 @@ export const Footer: React.FC<FooterProps> = ({ onOpenAbout, onNavigateAdmin }) 
         </div>
 
         <p className="text-xs text-slate-400">
-          © {new Date().getFullYear()} Kids Coloring Studio. 100% Free & Kid Safe.
+          © {new Date().getFullYear()} My Art Studio. 100% Free & Kid Safe.
         </p>
       </div>
     </footer>

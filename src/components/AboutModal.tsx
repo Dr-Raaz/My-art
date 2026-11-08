@@ -21,7 +21,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
             </div>
             <div>
               <h2 className="text-xl font-bold text-slate-800 font-['Fredoka']">
-                About Kids Coloring Studio
+                About My Art Studio
               </h2>
               <p className="text-xs text-purple-600 font-medium">
                 Safe, Free & Private Creative Fun
@@ -39,7 +39,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
 
         <div className="space-y-4 text-xs sm:text-sm text-slate-600 leading-relaxed font-medium">
           <p>
-            <strong>Kids Coloring Studio</strong> is a free digital coloring platform designed specifically for children, parents, and teachers. Children can browse hand-curated black-and-white illustrations and color them with a smart flood-fill bucket, smooth brushes, an eraser, and 36 vibrant colors.
+            <strong>My Art Studio</strong> is a free digital coloring platform designed specifically for children, parents, and teachers. Children can browse hand-curated black-and-white illustrations and color them with a smart flood-fill bucket, smooth brushes, an eraser, and 36 vibrant colors.
           </p>
 
           <div className="p-4 rounded-2xl bg-purple-50/70 border border-purple-100 space-y-2">

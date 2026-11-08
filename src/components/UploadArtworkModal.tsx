@@ -121,6 +121,7 @@ export const UploadArtworkModal: React.FC<UploadArtworkModalProps> = ({
         categoryId,
         imageUrl: uploadResult.imageUrl,
         storagePath: uploadResult.storagePath,
+        imagekitFileId: uploadResult.imagekitFileId,
         difficulty,
         isPublished,
         imageWidth: uploadResult.width,

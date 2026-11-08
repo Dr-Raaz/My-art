@@ -73,10 +73,30 @@ export async function verifyPassword(password: string, storedHash: string): Prom
  */
 const DEFAULT_INITIAL_HASH = hashPasswordSync('myart67', 'c81f7e9a2b4d6e0f');
 
-export function getAdminCredentials(): { username: string; passwordHash: string } {
+export function getAdminCredentials(): { username: string; passwordHash: string; isConfigured: boolean } {
+  const envUsername = process.env.ADMIN_USERNAME?.trim();
+  const envPasswordHash = process.env.ADMIN_PASSWORD_HASH?.trim();
+
+  if (process.env.NODE_ENV === 'production') {
+    if (!envPasswordHash || !envUsername) {
+      return {
+        username: envUsername || '',
+        passwordHash: '',
+        isConfigured: false,
+      };
+    }
+    return {
+      username: envUsername,
+      passwordHash: envPasswordHash,
+      isConfigured: true,
+    };
+  }
+
+  // Development mode fallback
   return {
-    username: process.env.ADMIN_USERNAME || 'my_art',
-    passwordHash: process.env.ADMIN_PASSWORD_HASH || DEFAULT_INITIAL_HASH,
+    username: envUsername || 'my_art',
+    passwordHash: envPasswordHash || DEFAULT_INITIAL_HASH,
+    isConfigured: true,
   };
 }
 
@@ -147,8 +167,17 @@ export function clearRateLimit(identifier: string): void {
   attemptsMap.delete(identifier);
 }
 
-// Simple signed session token (HMAC-SHA256) for secure admin sessions
-const SESSION_SECRET = process.env.SESSION_SECRET || 'kids-coloring-studio-session-secret-key-2026';
+// Session secret getter with strict production enforcement
+export function getSessionSecret(): string {
+  const secret = process.env.SESSION_SECRET?.trim();
+  if (secret) {
+    return secret;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('SESSION_SECRET environment variable is strictly required for administrative operations in production.');
+  }
+  return 'dev-local-session-secret-key-do-not-use-in-production';
+}
 
 export interface AdminSession {
   username: string;
@@ -164,8 +193,9 @@ export function createAdminSessionToken(username: string): string {
     issuedAt: Date.now(),
     expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
   };
+  const secret = getSessionSecret();
   const payloadBase64 = Buffer.from(JSON.stringify(session)).toString('base64url');
-  const signature = crypto.createHmac('sha256', SESSION_SECRET).update(payloadBase64).digest('base64url');
+  const signature = crypto.createHmac('sha256', secret).update(payloadBase64).digest('base64url');
   return `${payloadBase64}.${signature}`;
 }
 
@@ -174,7 +204,8 @@ export function verifyAdminSessionToken(token: string): AdminSession | null {
     const [payloadBase64, signature] = token.split('.');
     if (!payloadBase64 || !signature) return null;
 
-    const expectedSig = crypto.createHmac('sha256', SESSION_SECRET).update(payloadBase64).digest('base64url');
+    const secret = getSessionSecret();
+    const expectedSig = crypto.createHmac('sha256', secret).update(payloadBase64).digest('base64url');
     if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSig))) {
       return null;
     }

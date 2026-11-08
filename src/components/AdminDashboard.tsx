@@ -70,7 +70,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       <div className="md:hidden bg-slate-900 text-white px-4 py-3 flex items-center justify-between sticky top-0 z-40 border-b border-slate-800">
         <div className="flex items-center gap-2">
           <Palette className="w-5 h-5 text-yellow-400" />
-          <span className="font-bold text-base font-['Fredoka']">Kids Coloring Admin</span>
+          <span className="font-bold text-base font-['Fredoka']">My Art Studio Admin</span>
         </div>
         <button
           onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
@@ -95,7 +95,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               </div>
               <div>
                 <h1 className="font-bold text-white text-base font-['Fredoka']">
-                  Coloring Studio
+                  My Art Studio
                 </h1>
                 <p className="text-[11px] text-purple-300 font-semibold flex items-center gap-1">
                   <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
@@ -214,7 +214,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               {activeTab === 'settings' && 'Firebase & Infrastructure'}
             </h2>
             <p className="text-xs text-slate-500 font-medium mt-0.5">
-              Kids Coloring Studio Content & Artwork Administration
+              My Art Studio Content & Artwork Administration
             </p>
           </div>
 

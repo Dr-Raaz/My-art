@@ -70,7 +70,7 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
           <button
             onClick={onBackToSite}
             className="absolute top-4 left-4 p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-colors text-white cursor-pointer flex items-center gap-1.5 text-xs font-semibold"
-            aria-label="Back to Kids Coloring Studio"
+            aria-label="Back to My Art Studio"
           >
             <ArrowLeft className="w-4 h-4" />
             <span>Public Site</span>
@@ -81,7 +81,7 @@ export const AdminLogin: React.FC<AdminLoginProps> = ({
           </div>
           <h2 className="text-2xl font-bold font-['Fredoka']">Administrator Portal</h2>
           <p className="text-xs text-purple-200 mt-1">
-            Kids Coloring Studio Content & Artwork Management
+            My Art Studio Content & Artwork Management
           </p>
         </div>
 

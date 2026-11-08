@@ -38,7 +38,7 @@ export const Header: React.FC<HeaderProps> = ({
             onNavigate('home');
           }}
           className="flex items-center gap-2.5 sm:gap-3 group text-left cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 rounded-2xl p-1 shrink-0"
-          aria-label="Kids Coloring Studio Home"
+          aria-label="My Art Studio Home"
         >
           <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-2xl bg-gradient-to-tr from-purple-500 via-pink-400 to-yellow-300 flex items-center justify-center text-white shadow-md shadow-purple-200 group-hover:scale-105 transition-transform duration-200 shrink-0">
             <Palette className="w-5 h-5 sm:w-6 sm:h-6" />
@@ -46,7 +46,7 @@ export const Header: React.FC<HeaderProps> = ({
           <div>
             <div className="flex items-center gap-1 sm:gap-1.5">
               <span className="font-bold text-lg sm:text-2xl tracking-tight text-slate-800 font-['Fredoka']">
-                Kids Coloring
+                My Art
               </span>
               <span className="px-1.5 py-0.2 sm:px-2 sm:py-0.5 text-[10px] sm:text-xs font-semibold rounded-full bg-purple-100 text-purple-700">
                 Studio

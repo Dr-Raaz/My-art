@@ -16,6 +16,11 @@ import {
   createAdminSessionToken,
   verifyAdminSessionToken,
 } from './src/server/auth.js';
+import {
+  getImageKitConfig,
+  generateUploadAuth,
+  deleteImageKitFile,
+} from './src/server/imagekit.js';
 
 dotenv.config();
 
@@ -46,6 +51,23 @@ function getClientIp(req: express.Request): string {
   return req.ip || req.socket.remoteAddress || 'unknown-client';
 }
 
+// Helper to enforce valid admin session token on protected endpoints
+function requireAdminAuth(req: express.Request, res: express.Response): boolean {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'Unauthorized. Admin session token is required.' });
+    return false;
+  }
+
+  const token = authHeader.substring(7);
+  const session = verifyAdminSessionToken(token);
+  if (!session || !session.admin) {
+    res.status(401).json({ error: 'Unauthorized. Admin session is invalid or has expired.' });
+    return false;
+  }
+  return true;
+}
+
 // API Routes
 app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -65,10 +87,15 @@ app.post('/api/admin/login', async (req, res) => {
     return res.status(400).json({ error: 'Username and password are required.' });
   }
 
-  const { username: configuredUsername, passwordHash } = getAdminCredentials();
+  const adminCreds = getAdminCredentials();
+  if (!adminCreds.isConfigured) {
+    return res.status(503).json({
+      error: 'Administrative access is not configured on this server. Required credentials are missing.',
+    });
+  }
 
   // 2. Check username
-  if (username !== configuredUsername) {
+  if (username !== adminCreds.username) {
     const attempt = recordFailedAttempt(clientIp);
     return res.status(401).json({
       error: 'Invalid administrator credentials.',
@@ -79,7 +106,7 @@ app.post('/api/admin/login', async (req, res) => {
   }
 
   // 3. Verify scrypt password hash
-  const isValidPassword = await verifyPassword(password, passwordHash);
+  const isValidPassword = await verifyPassword(password, adminCreds.passwordHash);
   if (!isValidPassword) {
     const attempt = recordFailedAttempt(clientIp);
     return res.status(401).json({
@@ -123,16 +150,80 @@ app.get('/api/admin/session', (req, res) => {
   });
 });
 
-app.post('/api/admin/logout', (req, res) => {
+app.post('/api/admin/logout', (_req, res) => {
   return res.json({ success: true, message: 'Logged out successfully.' });
 });
 
-app.get('/api/config-status', (req, res) => {
+/**
+ * Returns authentication parameters for direct browser-to-ImageKit uploads.
+ * Requires an active admin session.
+ * Never exposes the ImageKit private key.
+ */
+app.get('/api/admin/imagekit-auth', (req, res) => {
+  if (!requireAdminAuth(req, res)) return;
+
+  const config = getImageKitConfig();
+  if (!config.isConfigured) {
+    return res.status(503).json({
+      error: 'ImageKit is not configured on this server.',
+    });
+  }
+
+  try {
+    const authParams = generateUploadAuth();
+    return res.json({
+      success: true,
+      ...authParams,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      error: err instanceof Error ? err.message : 'Failed to generate ImageKit upload parameters.',
+    });
+  }
+});
+
+/**
+ * Deletes a file from ImageKit given its file ID.
+ * Requires an active admin session.
+ */
+app.post('/api/admin/delete-imagekit', async (req, res) => {
+  if (!requireAdminAuth(req, res)) return;
+
+  const { fileId } = req.body || {};
+  if (!fileId || typeof fileId !== 'string' || !fileId.trim()) {
+    return res.status(400).json({
+      error: 'A valid fileId string is required.',
+    });
+  }
+
+  const config = getImageKitConfig();
+  if (!config.isConfigured) {
+    return res.status(503).json({
+      error: 'ImageKit is not configured on this server.',
+    });
+  }
+
+  try {
+    await deleteImageKitFile(fileId.trim());
+    return res.json({
+      success: true,
+      fileId: fileId.trim(),
+    });
+  } catch (err: any) {
+    return res.status(502).json({
+      error: err?.message || 'Failed to delete file from ImageKit.',
+    });
+  }
+});
+
+app.get('/api/config-status', (_req, res) => {
   const hasFirebaseApiKey = Boolean(process.env.VITE_FIREBASE_API_KEY);
   const hasFirebaseProject = Boolean(process.env.VITE_FIREBASE_PROJECT_ID);
+  const ikConfig = getImageKitConfig();
 
   return res.json({
     firebaseConfigured: hasFirebaseApiKey && hasFirebaseProject,
+    imagekitConfigured: ikConfig.isConfigured,
     adminUsername: getAdminCredentials().username,
     appVersion: '1.0.0',
     mode: process.env.NODE_ENV || 'development',

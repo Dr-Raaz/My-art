@@ -21,6 +21,7 @@ export interface Artwork {
   categoryId: string;
   imageUrl: string;
   storagePath?: string;
+  imagekitFileId?: string;
   difficulty: 'easy' | 'medium' | 'hard';
   isPublished: boolean;
   imageWidth: number;

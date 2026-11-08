@@ -198,18 +198,58 @@ export async function saveArtwork(artwork: Artwork): Promise<void> {
 
 /**
  * Deletes an artwork and its storage file if applicable.
+ * If ImageKit deletion fails, Firestore/local metadata is NOT deleted.
  */
 export async function deleteArtwork(artworkId: string): Promise<void> {
+  // 1. Locate the artwork to identify its storage provider
+  const allArtworks = await getArtworks(true);
+  const artwork = allArtworks.find((a) => a.id === artworkId);
+
   const { db, storage, status } = initFirebase();
 
+  if (artwork) {
+    // 2. If artwork uses ImageKit, delete via authenticated backend endpoint
+    const imagekitFileId =
+      artwork.imagekitFileId ||
+      (artwork.imageUrl?.includes('ik.imagekit.io') && artwork.storagePath && !artwork.storagePath.startsWith('artworks/')
+        ? artwork.storagePath
+        : undefined);
+
+    if (imagekitFileId) {
+      const adminToken = typeof window !== 'undefined' ? localStorage.getItem('kcs_admin_token') : null;
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (adminToken) {
+        headers['Authorization'] = `Bearer ${adminToken}`;
+      }
+
+      const res = await fetch('/api/admin/delete-imagekit', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ fileId: imagekitFileId }),
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(
+          `Failed to delete image from ImageKit (${errorData.error || res.statusText}). Artwork metadata was preserved.`
+        );
+      }
+    } else if (artwork.storagePath && artwork.storagePath.startsWith('artworks/') && status.isConfigured && storage) {
+      // 3. If artwork was stored in Firebase Storage, delete from storage
+      try {
+        const storageReference = ref(storage, artwork.storagePath);
+        await deleteObject(storageReference);
+      } catch (err) {
+        console.warn('Firebase storage file deletion note:', err);
+      }
+    }
+  }
+
+  // 4. Delete metadata from Firestore or local storage only after storage deletion succeeded
   if (status.isConfigured && db) {
     try {
-      if (storage) {
-        try {
-          const storageReference = ref(storage, `artworks/${artworkId}/original`);
-          await deleteObject(storageReference);
-        } catch {}
-      }
       await deleteDoc(doc(db, 'artworks', artworkId));
       return;
     } catch (err) {
@@ -218,7 +258,7 @@ export async function deleteArtwork(artworkId: string): Promise<void> {
   }
 
   const current = await getArtworks(true);
-  const filtered = current.filter(a => a.id !== artworkId);
+  const filtered = current.filter((a) => a.id !== artworkId);
   if (typeof window !== 'undefined') {
     localStorage.setItem(STORAGE_KEY_ARTWORKS, JSON.stringify(filtered));
   }
@@ -229,45 +269,143 @@ export async function deleteArtwork(artworkId: string): Promise<void> {
  * - Validates file format (PNG, JPG, JPEG, WebP)
  * - Validates file size (max 10MB)
  * - Computes image dimensions
- * - Uploads to Firebase Storage if configured, or converts to Data URL for local preview
+ * - Performs signed direct browser-to-ImageKit upload when ImageKit is configured
+ * - Falls back to Firebase Storage if configured
+ * - Never stores Base64 image data in Firestore
  */
 export async function uploadArtworkImage(
   artworkId: string,
   file: File,
   onProgress?: (percent: number) => void
-): Promise<{ imageUrl: string; storagePath?: string; width: number; height: number }> {
-  // Validate format
+): Promise<{ imageUrl: string; storagePath?: string; imagekitFileId?: string; width: number; height: number }> {
+  // 1. Validate format
   const validTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp'];
   if (!validTypes.includes(file.type)) {
     throw new Error('Invalid file format. Please upload a PNG, JPG, or WebP image.');
   }
 
-  // Validate size (max 10MB)
+  // 2. Validate size (max 10MB)
   const maxSize = 10 * 1024 * 1024;
   if (file.size > maxSize) {
     throw new Error('File is too large. Maximum allowed size is 10 MB.');
   }
 
-  // Load image to verify dimensions
-  const { width, height, dataUrl } = await new Promise<{
-    width: number;
-    height: number;
-    dataUrl: string;
-  }>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const result = e.target?.result as string;
-      const img = new Image();
-      img.onload = () => {
-        resolve({ width: img.naturalWidth, height: img.naturalHeight, dataUrl: result });
-      };
-      img.onerror = () => reject(new Error('Failed to read image file data.'));
-      img.src = result;
+  // 3. Compute image dimensions
+  const { width, height } = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const naturalWidth = img.naturalWidth;
+      const naturalHeight = img.naturalHeight;
+      URL.revokeObjectURL(objectUrl);
+      resolve({ width: naturalWidth, height: naturalHeight });
     };
-    reader.onerror = () => reject(new Error('Failed to read file.'));
-    reader.readAsDataURL(file);
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Failed to load image file dimensions.'));
+    };
+    img.src = objectUrl;
   });
 
+  // 4. Try signed direct browser-to-ImageKit upload
+  const adminToken = typeof window !== 'undefined' ? localStorage.getItem('kcs_admin_token') : null;
+  let imageKitAuth: {
+    token: string;
+    expire: number;
+    signature: string;
+    publicKey: string;
+    urlEndpoint: string;
+  } | null = null;
+
+  try {
+    const authHeaders: Record<string, string> = {};
+    if (adminToken) {
+      authHeaders['Authorization'] = `Bearer ${adminToken}`;
+    }
+    const authRes = await fetch('/api/admin/imagekit-auth', {
+      headers: authHeaders,
+    });
+
+    if (authRes.ok) {
+      const authData = await authRes.json();
+      if (authData.token && authData.signature && authData.publicKey) {
+        imageKitAuth = authData;
+      }
+    }
+  } catch {
+    // Backend endpoint unreachable or unconfigured
+  }
+
+  if (imageKitAuth) {
+    onProgress?.(5);
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('fileName', `${artworkId}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`);
+    formData.append('publicKey', imageKitAuth.publicKey);
+    formData.append('signature', imageKitAuth.signature);
+    formData.append('expire', String(imageKitAuth.expire));
+    formData.append('token', imageKitAuth.token);
+    formData.append('folder', '/artworks/');
+    formData.append('useUniqueFileName', 'true');
+
+    interface ImageKitUploadResponse {
+      fileId: string;
+      name: string;
+      url: string;
+      width?: number;
+      height?: number;
+      filePath?: string;
+    }
+
+    const uploadResponse = await new Promise<ImageKitUploadResponse>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', 'https://upload.imagekit.io/api/v1/files/upload', true);
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          const percent = Math.min(99, Math.round((e.loaded / e.total) * 100));
+          onProgress(percent);
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const parsed = JSON.parse(xhr.responseText);
+            resolve(parsed);
+          } catch {
+            reject(new Error('Invalid JSON response received from ImageKit upload API.'));
+          }
+        } else {
+          try {
+            const errJson = JSON.parse(xhr.responseText);
+            reject(new Error(errJson.message || `ImageKit upload failed with HTTP status ${xhr.status}.`));
+          } catch {
+            reject(new Error(`ImageKit upload failed with HTTP status ${xhr.status}.`));
+          }
+        }
+      };
+
+      xhr.onerror = () => {
+        reject(new Error('Network error during direct upload to ImageKit.'));
+      };
+
+      xhr.send(formData);
+    });
+
+    onProgress?.(100);
+
+    return {
+      imageUrl: uploadResponse.url,
+      storagePath: uploadResponse.fileId,
+      imagekitFileId: uploadResponse.fileId,
+      width: uploadResponse.width || width,
+      height: uploadResponse.height || height,
+    };
+  }
+
+  // 5. Fallback to Firebase Storage if configured
   const { storage, status } = initFirebase();
 
   if (status.isConfigured && storage) {
@@ -281,7 +419,22 @@ export async function uploadArtworkImage(
     return { imageUrl: downloadUrl, storagePath, width, height };
   }
 
-  // Fallback to data URL
+  // 6. Safeguard: Never store Base64 payloads into Firestore
+  if (status.isConfigured) {
+    throw new Error(
+      'ImageKit or Firebase Storage must be configured to upload artwork to Firestore. Base64 uploads to database are disabled.'
+    );
+  }
+
+  // Standalone offline demo preview fallback (local demo mode only)
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => resolve(e.target?.result as string);
+    reader.onerror = () => reject(new Error('Failed to read file data.'));
+    reader.readAsDataURL(file);
+  });
+
   onProgress?.(100);
   return { imageUrl: dataUrl, width, height };
 }
+

@@ -5,6 +5,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import {
   hashPassword,
   verifyPassword,
@@ -54,22 +55,59 @@ test('Rate limiter limits failed attempts and allows clearing', () => {
   assert.equal(afterClear.allowed, true);
 });
 
-test('verifyPassword supports both Modular Crypt Format and salt:key format', async () => {
-  const password = 'custom_secret_pass';
-  const fullHash = await hashPassword(password);
-  // Extract salt and derived key
-  const parts = fullHash.split('$');
-  const salt = parts[2];
-  const derivedKeyHex = parts[3];
-  const colonHash = `${salt}:${derivedKeyHex}`;
+test('verifyPassword handles exact PowerShell Buffer-based generation method', async () => {
+  const password = 'myProductionSecurePassword123!';
+  // Exact PowerShell generation logic
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 });
+  const output = salt.toString('hex') + ':' + hash.toString('hex');
 
-  // Full format verification
-  assert.equal(await verifyPassword(password, fullHash), true);
-  // Colon format verification
-  assert.equal(await verifyPassword(password, colonHash), true);
-  // Invalid password fails on both
-  assert.equal(await verifyPassword('wrong_pass', fullHash), false);
-  assert.equal(await verifyPassword('wrong_pass', colonHash), false);
+  // Verify valid password
+  assert.equal(await verifyPassword(password, output), true);
+
+  // Verify wrong password fails
+  assert.equal(await verifyPassword('wrongPassword999', output), false);
+});
+
+test('verifyPassword verifies Modular Crypt Format correctly', async () => {
+  const password = 'custom_mcf_pass';
+  const mcfHash = await hashPassword(password);
+  assert.ok(mcfHash.startsWith('scrypt$N=16384,r=8,p=1$'));
+
+  // Valid password matches
+  assert.equal(await verifyPassword(password, mcfHash), true);
+  // Wrong password fails
+  assert.equal(await verifyPassword('wrong_pass', mcfHash), false);
+});
+
+test('verifyPassword rejects malformed and invalid hashes safely', async () => {
+  const password = 'test_password';
+
+  // Empty or invalid types
+  assert.equal(await verifyPassword(password, ''), false);
+  assert.equal(await verifyPassword(password, null as unknown as string), false);
+  assert.equal(await verifyPassword(password, undefined as unknown as string), false);
+  assert.equal(await verifyPassword(password, 'invalid-random-string'), false);
+
+  // Colon format with invalid salt length (not 32 hex chars)
+  assert.equal(await verifyPassword(password, 'abcd:0123456789abcdef'), false);
+
+  // Colon format with invalid key length (not 128 hex chars)
+  const validSaltHex = crypto.randomBytes(16).toString('hex');
+  assert.equal(await verifyPassword(password, `${validSaltHex}:shortkey`), false);
+
+  // Colon format with non-hex characters in salt
+  const nonHexSalt = 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz';
+  const validKeyHex = crypto.randomBytes(64).toString('hex');
+  assert.equal(await verifyPassword(password, `${nonHexSalt}:${validKeyHex}`), false);
+
+  // Colon format with non-hex characters in key
+  const nonHexKey = 'z'.repeat(128);
+  assert.equal(await verifyPassword(password, `${validSaltHex}:${nonHexKey}`), false);
+
+  // Malformed MCF
+  assert.equal(await verifyPassword(password, 'scrypt$invalid$format'), false);
+  assert.equal(await verifyPassword(password, 'bcrypt$invalid'), false);
 });
 
 test('Session token generation and verification works with tamper resistance', () => {

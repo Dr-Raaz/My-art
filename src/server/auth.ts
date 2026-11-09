@@ -41,15 +41,19 @@ export function hashPasswordSync(password: string, customSalt?: string): string 
 
 /**
  * Timing-safe scrypt password verification.
- * Supports both standard Modular Crypt Format (scrypt$N=16384,r=8,p=1$<salt>$<key>)
- * and salt:key format.
+ * Supports both:
+ * 1. Standard Modular Crypt Format: scrypt$N=16384,r=8,p=1$<saltString>$<keyHex>
+ *    where salt was passed as a string.
+ * 2. Colon-separated format: <saltHex>:<keyHex>
+ *    where salt is a 32-hex-character string decoded into a 16-byte Buffer
+ *    and key is a 128-hex-character derived key.
  */
 export async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
   return new Promise((resolve) => {
     try {
       if (!storedHash || typeof storedHash !== 'string') return resolve(false);
 
-      let salt: string;
+      let scryptSalt: string | Buffer;
       let originalKeyHex: string;
 
       if (storedHash.startsWith('scrypt$')) {
@@ -57,21 +61,32 @@ export async function verifyPassword(password: string, storedHash: string): Prom
         if (parts.length < 4 || parts[0] !== 'scrypt') {
           return resolve(false);
         }
-        salt = parts[2];
+        scryptSalt = parts[2];
         originalKeyHex = parts[3];
+        if (!scryptSalt || !originalKeyHex) return resolve(false);
       } else if (storedHash.includes(':')) {
         const parts = storedHash.split(':');
         if (parts.length !== 2) return resolve(false);
-        salt = parts[0];
+        const saltHex = parts[0];
         originalKeyHex = parts[1];
+
+        // Validate that salt is exactly 32 hex chars and derived key is exactly 128 hex chars
+        if (!/^[0-9a-f]{32}$/i.test(saltHex) || !/^[0-9a-f]{128}$/i.test(originalKeyHex)) {
+          return resolve(false);
+        }
+
+        // Decode the 32-char hex string into the original 16-byte Buffer
+        scryptSalt = Buffer.from(saltHex, 'hex');
       } else {
         return resolve(false);
       }
 
-      if (!salt || !originalKeyHex) return resolve(false);
       const originalKey = Buffer.from(originalKeyHex, 'hex');
+      if (originalKey.length !== 64) {
+        return resolve(false);
+      }
 
-      crypto.scrypt(password, salt, 64, { N: 16384, r: 8, p: 1 }, (err, derivedKey) => {
+      crypto.scrypt(password, scryptSalt, 64, { N: 16384, r: 8, p: 1 }, (err, derivedKey) => {
         if (err) return resolve(false);
         if (derivedKey.length !== originalKey.length) return resolve(false);
         const match = crypto.timingSafeEqual(derivedKey, originalKey);

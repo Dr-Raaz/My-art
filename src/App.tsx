@@ -19,6 +19,7 @@ import {
   signOutUser,
   type AuthState,
 } from './services/authService';
+import { testFirestoreConnection } from './services/firebase';
 import { Header } from './components/Header';
 import { Hero } from './components/Hero';
 import { CategoryList } from './components/CategoryList';
@@ -132,13 +133,14 @@ export default function App() {
   );
 
   // Load categories and artworks
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (includeAll = isAdministrator) => {
     try {
       setIsLoadingData(true);
       const [cats, arts] = await Promise.all([
-        getCategories(),
-        getArtworks(true),
+        getCategories(includeAll),
+        getArtworks(includeAll),
       ]);
+      console.log('[App] loadData loaded:', cats.length, 'categories,', arts.length, 'artworks');
       setCategories(cats);
       setArtworks(arts);
       artworksRef.current = arts;
@@ -164,6 +166,7 @@ export default function App() {
   // Initialize Firebase Auth listener and check existing sessions
   useEffect(() => {
     initAuthListener();
+    testFirestoreConnection();
     const unsubscribe = subscribeToAuth((state) => {
       setGoogleAuth(state);
       // If user just authenticated as administrator and currently at login screen, transition to dashboard

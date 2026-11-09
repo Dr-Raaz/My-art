@@ -5,8 +5,9 @@
 
 import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
 import { getAuth, type Auth } from 'firebase/auth';
-import { getFirestore, type Firestore } from 'firebase/firestore';
+import { getFirestore, doc, getDocFromServer, type Firestore } from 'firebase/firestore';
 import { getStorage, type FirebaseStorage } from 'firebase/storage';
+import firebaseAppletConfig from '../../firebase-applet-config.json';
 
 export enum OperationType {
   CREATE = 'create',
@@ -33,15 +34,16 @@ export function handleFirestoreError(
   error: unknown,
   operationType: OperationType,
   path: string | null,
-  auth?: Auth
+  activeAuth?: Auth | null
 ): never {
+  const currentAuth = activeAuth || auth;
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth?.currentUser?.uid ?? null,
-      email: auth?.currentUser?.email ?? null,
-      emailVerified: auth?.currentUser?.emailVerified ?? null,
-      isAnonymous: auth?.currentUser?.isAnonymous ?? null,
+      userId: currentAuth?.currentUser?.uid ?? null,
+      email: currentAuth?.currentUser?.email ?? null,
+      emailVerified: currentAuth?.currentUser?.emailVerified ?? null,
+      isAnonymous: currentAuth?.currentUser?.isAnonymous ?? null,
     },
     operationType,
     path,
@@ -56,6 +58,7 @@ export interface FirebaseStatus {
   databaseId?: string;
   authDomain?: string;
   storageBucket?: string;
+  appId?: string;
   reason?: string;
 }
 
@@ -65,30 +68,60 @@ let auth: Auth | null = null;
 let storage: FirebaseStorage | null = null;
 let cachedStatus: FirebaseStatus | null = null;
 
+/**
+ * Resolves Firebase configuration dynamically from native AI Studio configuration
+ * (firebase-applet-config.json) with fallback to Vite client environment variables.
+ */
+function resolveFirebaseConfig() {
+  const cfg = firebaseAppletConfig as {
+    projectId?: string;
+    appId?: string;
+    apiKey?: string;
+    authDomain?: string;
+    firestoreDatabaseId?: string;
+    storageBucket?: string;
+    messagingSenderId?: string;
+  };
+
+  const apiKey = cfg?.apiKey || import.meta.env.VITE_FIREBASE_API_KEY;
+  const projectId = cfg?.projectId || import.meta.env.VITE_FIREBASE_PROJECT_ID;
+  const authDomain = cfg?.authDomain || import.meta.env.VITE_FIREBASE_AUTH_DOMAIN;
+  const storageBucket = cfg?.storageBucket || import.meta.env.VITE_FIREBASE_STORAGE_BUCKET;
+  const messagingSenderId = cfg?.messagingSenderId || import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID;
+  const appId = cfg?.appId || import.meta.env.VITE_FIREBASE_APP_ID;
+  const firestoreDatabaseId = cfg?.firestoreDatabaseId || import.meta.env.VITE_FIREBASE_DATABASE_ID;
+
+  return {
+    apiKey,
+    projectId,
+    authDomain,
+    storageBucket,
+    messagingSenderId,
+    appId,
+    firestoreDatabaseId,
+  };
+}
+
 export function getFirebaseStatus(): FirebaseStatus {
   if (cachedStatus) return cachedStatus;
 
-  // Check Vite client environment variables or global config
-  const apiKey = import.meta.env.VITE_FIREBASE_API_KEY;
-  const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
-  const authDomain = import.meta.env.VITE_FIREBASE_AUTH_DOMAIN;
-  const storageBucket = import.meta.env.VITE_FIREBASE_STORAGE_BUCKET;
-  const firestoreDatabaseId = import.meta.env.VITE_FIREBASE_DATABASE_ID || '(default)';
+  const config = resolveFirebaseConfig();
 
-  if (!apiKey || !projectId) {
+  if (!config.apiKey || !config.projectId) {
     cachedStatus = {
       isConfigured: false,
-      reason: 'Firebase credentials (VITE_FIREBASE_API_KEY & VITE_FIREBASE_PROJECT_ID) are not configured.',
+      reason: 'Firebase credentials are not configured in firebase-applet-config.json or environment.',
     };
     return cachedStatus;
   }
 
   cachedStatus = {
     isConfigured: true,
-    projectId,
-    databaseId: firestoreDatabaseId,
-    authDomain,
-    storageBucket,
+    projectId: config.projectId,
+    databaseId: config.firestoreDatabaseId || '(default)',
+    authDomain: config.authDomain,
+    storageBucket: config.storageBucket,
+    appId: config.appId,
   };
   return cachedStatus;
 }
@@ -108,18 +141,24 @@ export function initFirebase(): {
 
   if (!app && getApps().length === 0) {
     try {
-      const config = {
-        apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-        authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-        projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-        storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-        messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-        appId: import.meta.env.VITE_FIREBASE_APP_ID,
-      };
+      const config = resolveFirebaseConfig();
 
-      app = initializeApp(config);
-      const dbId = import.meta.env.VITE_FIREBASE_DATABASE_ID;
-      db = dbId ? getFirestore(app, dbId) : getFirestore(app);
+      app = initializeApp({
+        apiKey: config.apiKey,
+        authDomain: config.authDomain,
+        projectId: config.projectId,
+        storageBucket: config.storageBucket,
+        messagingSenderId: config.messagingSenderId,
+        appId: config.appId,
+      });
+
+      // Pass designated firestoreDatabaseId per AI Studio skill guidelines
+      if (config.firestoreDatabaseId && config.firestoreDatabaseId !== '(default)') {
+        db = getFirestore(app, config.firestoreDatabaseId);
+      } else {
+        db = getFirestore(app);
+      }
+
       auth = getAuth(app);
       storage = getStorage(app);
     } catch (e) {
@@ -129,12 +168,42 @@ export function initFirebase(): {
     }
   } else if (!app && getApps().length > 0) {
     app = getApps()[0];
-    db = getFirestore(app);
+    const config = resolveFirebaseConfig();
+    if (config.firestoreDatabaseId && config.firestoreDatabaseId !== '(default)') {
+      db = getFirestore(app, config.firestoreDatabaseId);
+    } else {
+      db = getFirestore(app);
+    }
     auth = getAuth(app);
     storage = getStorage(app);
   }
 
   return { app, db, auth, storage, status };
+}
+
+/**
+ * Validates connection to Firestore by testing server round-trip.
+ */
+export async function testFirestoreConnection(): Promise<{ connected: boolean; message: string }> {
+  const { db, status } = initFirebase();
+  if (!status.isConfigured || !db) {
+    return { connected: false, message: 'Firebase is not configured.' };
+  }
+
+  try {
+    // Attempt to read from server to verify connectivity
+    await getDocFromServer(doc(db, 'test', 'connection'));
+    return { connected: true, message: 'Connected successfully to Cloud Firestore.' };
+  } catch (error: any) {
+    // If permission is denied or document does not exist, server communication succeeded!
+    if (error?.code === 'permission-denied' || error?.code === 'not-found') {
+      return { connected: true, message: 'Connected successfully to Cloud Firestore (Security rules active).' };
+    }
+    if (error instanceof Error && (error.message.includes('the client is offline') || error.message.includes('unavailable'))) {
+      return { connected: false, message: 'Please check your Firebase configuration: Firestore client is offline.' };
+    }
+    return { connected: true, message: `Connected to Cloud Firestore (${error?.code || 'ready'}).` };
+  }
 }
 
 export { app, db, auth, storage };

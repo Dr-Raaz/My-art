@@ -4,9 +4,11 @@
  */
 
 import crypto from 'node:crypto';
+import { getServerFirebaseConfig } from './firebaseConfig.js';
 
 export const ADMIN_EMAIL = 'raazprasai1996@gmail.com';
-export const FIREBASE_PROJECT_ID = process.env.VITE_FIREBASE_PROJECT_ID || 'my-art-studio-67';
+export const FIREBASE_PROJECT_ID =
+  getServerFirebaseConfig().projectId || process.env.VITE_FIREBASE_PROJECT_ID || 'my-art-studio-67';
 
 // In-memory cache for Google's public x509 certificates for Firebase ID token verification
 interface CertCache {

@@ -50,16 +50,17 @@ export async function getCategories(includeInactive = false): Promise<Category[]
     try {
       const q = includeInactive
         ? query(collection(db, 'categories'), orderBy('sortOrder', 'asc'))
-        : query(collection(db, 'categories'), where('isActive', '==', true), orderBy('sortOrder', 'asc'));
+        : query(collection(db, 'categories'), where('isActive', '==', true));
 
       const snapshot = await getDocs(q);
       const list: Category[] = [];
       snapshot.forEach((docSnap) => {
         list.push({ id: docSnap.id, ...(docSnap.data() as Omit<Category, 'id'>) });
       });
+      list.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
       if (list.length > 0) return list;
     } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, 'categories');
+      console.warn('Firestore getCategories note:', err);
     }
   }
 
@@ -99,7 +100,7 @@ export async function getArtworks(includeUnpublished = false): Promise<Artwork[]
       });
       if (list.length > 0) return list;
     } catch (err) {
-      handleFirestoreError(err, OperationType.LIST, 'artworks');
+      console.warn('Firestore getArtworks note:', err);
     }
   }
 

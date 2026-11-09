@@ -25,6 +25,7 @@ import {
   verifyFirebaseIdToken,
   ADMIN_EMAIL,
 } from './src/server/firebaseAuth.js';
+import { getServerFirebaseConfig } from './src/server/firebaseConfig.js';
 
 dotenv.config();
 
@@ -252,17 +253,39 @@ app.get('/api/auth/verify-token', async (req, res) => {
 });
 
 app.get('/api/config-status', (_req, res) => {
-  const hasFirebaseApiKey = Boolean(process.env.VITE_FIREBASE_API_KEY);
-  const hasFirebaseProject = Boolean(process.env.VITE_FIREBASE_PROJECT_ID);
+  const fbConfig = getServerFirebaseConfig();
   const ikConfig = getImageKitConfig();
 
   return res.json({
-    firebaseConfigured: hasFirebaseApiKey && hasFirebaseProject,
+    firebaseConfigured: fbConfig.isConfigured,
+    firebaseProjectId: fbConfig.projectId || null,
+    firestoreDatabaseId: fbConfig.firestoreDatabaseId || null,
     imagekitConfigured: ikConfig.isConfigured,
     adminUsername: getAdminCredentials().username,
     adminEmail: ADMIN_EMAIL,
     appVersion: '1.0.0',
     mode: process.env.NODE_ENV || 'development',
+  });
+});
+
+/**
+ * Public client configuration endpoint for Firebase.
+ * Returns only public configuration parameters.
+ */
+app.get('/api/firebase-config', (_req, res) => {
+  const fbConfig = getServerFirebaseConfig();
+  if (!fbConfig.isConfigured) {
+    return res.status(404).json({ error: 'Firebase is not configured.' });
+  }
+  return res.json({
+    projectId: fbConfig.projectId,
+    appId: fbConfig.appId,
+    apiKey: fbConfig.apiKey,
+    authDomain: fbConfig.authDomain,
+    firestoreDatabaseId: fbConfig.firestoreDatabaseId,
+    storageBucket: fbConfig.storageBucket,
+    messagingSenderId: fbConfig.messagingSenderId,
+    oAuthClientId: fbConfig.oAuthClientId,
   });
 });
 

@@ -54,6 +54,24 @@ test('Rate limiter limits failed attempts and allows clearing', () => {
   assert.equal(afterClear.allowed, true);
 });
 
+test('verifyPassword supports both Modular Crypt Format and salt:key format', async () => {
+  const password = 'custom_secret_pass';
+  const fullHash = await hashPassword(password);
+  // Extract salt and derived key
+  const parts = fullHash.split('$');
+  const salt = parts[2];
+  const derivedKeyHex = parts[3];
+  const colonHash = `${salt}:${derivedKeyHex}`;
+
+  // Full format verification
+  assert.equal(await verifyPassword(password, fullHash), true);
+  // Colon format verification
+  assert.equal(await verifyPassword(password, colonHash), true);
+  // Invalid password fails on both
+  assert.equal(await verifyPassword('wrong_pass', fullHash), false);
+  assert.equal(await verifyPassword('wrong_pass', colonHash), false);
+});
+
 test('Session token generation and verification works with tamper resistance', () => {
   const token = createAdminSessionToken('my_art');
   assert.ok(token.includes('.'));
@@ -67,3 +85,4 @@ test('Session token generation and verification works with tamper resistance', (
   const tampered = token + 'tamper';
   assert.equal(verifyAdminSessionToken(tampered), null);
 });
+

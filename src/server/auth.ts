@@ -41,16 +41,34 @@ export function hashPasswordSync(password: string, customSalt?: string): string 
 
 /**
  * Timing-safe scrypt password verification.
+ * Supports both standard Modular Crypt Format (scrypt$N=16384,r=8,p=1$<salt>$<key>)
+ * and salt:key format.
  */
 export async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
   return new Promise((resolve) => {
     try {
-      const parts = storedHash.split('$');
-      if (parts.length < 4 || parts[0] !== 'scrypt') {
+      if (!storedHash || typeof storedHash !== 'string') return resolve(false);
+
+      let salt: string;
+      let originalKeyHex: string;
+
+      if (storedHash.startsWith('scrypt$')) {
+        const parts = storedHash.split('$');
+        if (parts.length < 4 || parts[0] !== 'scrypt') {
+          return resolve(false);
+        }
+        salt = parts[2];
+        originalKeyHex = parts[3];
+      } else if (storedHash.includes(':')) {
+        const parts = storedHash.split(':');
+        if (parts.length !== 2) return resolve(false);
+        salt = parts[0];
+        originalKeyHex = parts[1];
+      } else {
         return resolve(false);
       }
-      const salt = parts[2];
-      const originalKeyHex = parts[3];
+
+      if (!salt || !originalKeyHex) return resolve(false);
       const originalKey = Buffer.from(originalKeyHex, 'hex');
 
       crypto.scrypt(password, salt, 64, { N: 16384, r: 8, p: 1 }, (err, derivedKey) => {

@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Capacitor } from '@capacitor/core';
 import type { Category, Artwork } from './data/defaultArtworks';
 import {
   getCategories,
@@ -165,8 +166,10 @@ export default function App() {
 
   // Initialize Firebase Auth listener and check existing sessions
   useEffect(() => {
-    initAuthListener();
     testFirestoreConnection();
+    // Native APK users browse and paint without an account. Authentication stays in the web admin portal for now.
+    if (Capacitor.isNativePlatform()) return;
+    initAuthListener();
     const unsubscribe = subscribeToAuth((state) => {
       setGoogleAuth(state);
       // If user just authenticated as administrator and currently at login screen, transition to dashboard
@@ -185,8 +188,9 @@ export default function App() {
 
     loadData();
 
-    // Check stored legacy admin session token
-    const token = localStorage.getItem('kcs_admin_token');
+    // Legacy admin sessions and admin routes are browser-only; the APK is a public coloring app.
+    const isNativeApp = Capacitor.isNativePlatform();
+    const token = isNativeApp ? null : localStorage.getItem('kcs_admin_token');
     const storedUser = localStorage.getItem('kcs_admin_user') || 'my_art';
 
     if (token) {
@@ -211,9 +215,9 @@ export default function App() {
 
     // Handle initial route
     const path = window.location.pathname;
-    if (path.includes('/admin/dashboard')) {
+    if (!isNativeApp && path.includes('/admin/dashboard')) {
       setCurrentView('admin-dashboard');
-    } else if (path.includes('/admin/login') || path === '/admin') {
+    } else if (!isNativeApp && (path.includes('/admin/login') || path === '/admin')) {
       setCurrentView('admin-login');
     }
 
@@ -223,11 +227,11 @@ export default function App() {
       const hash = window.location.hash;
       const state = event.state as { view?: ViewMode; artworkId?: string; scrollY?: number } | null;
 
-      if (p.includes('/admin/dashboard')) {
+      if (!Capacitor.isNativePlatform() && p.includes('/admin/dashboard')) {
         setCurrentView('admin-dashboard');
         setSelectedArtwork(null);
         setTransitionPhase('idle');
-      } else if (p.includes('/admin/login')) {
+      } else if (!Capacitor.isNativePlatform() && p.includes('/admin/login')) {
         setCurrentView('admin-login');
         setSelectedArtwork(null);
         setTransitionPhase('idle');

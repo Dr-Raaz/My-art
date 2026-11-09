@@ -5,6 +5,8 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
+    // Capacitor loads packaged assets from the app bundle; keep web builds rooted at '/'.
+    base: process.env.CAPACITOR_BUILD === 'true' ? './' : '/',
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {

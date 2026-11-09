@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import { Capacitor } from '@capacitor/core';
 import {
   Palette,
   Sparkles,
@@ -38,6 +39,7 @@ export const Header: React.FC<HeaderProps> = ({
   onScrollToCategories,
   onScrollToGallery,
 }) => {
+  const isNativeApp = Capacitor.isNativePlatform();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [authState, setAuthState] = useState<AuthState>({
     user: null,
@@ -181,6 +183,7 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
 
           {/* Authentication Section (Desktop) */}
+          {!isNativeApp && (
           <div className="ml-2 pl-2 border-l border-slate-200 flex items-center gap-2">
             {authState.isLoading ? (
               <div className="px-3 py-2 text-xs text-slate-400 flex items-center gap-1.5">
@@ -261,11 +264,12 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             )}
           </div>
+          )}
         </nav>
 
         {/* Mobile Hamburger / Close Button */}
         <div className="flex items-center gap-2 md:hidden">
-          {!authState.user ? (
+          {!isNativeApp && (!authState.user ? (
             <button
               onClick={handleGoogleSignIn}
               disabled={isSigningIn}
@@ -284,7 +288,7 @@ export const Header: React.FC<HeaderProps> = ({
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
               <span>Admin</span>
             </button>
-          ) : null}
+          ) : null)}
 
           <button
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
@@ -346,6 +350,7 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
 
           {/* User Account / Admin in Mobile Menu */}
+          {!isNativeApp && (
           <div className="pt-2 border-t border-purple-100 space-y-2">
             {!authState.user ? (
               <button
@@ -397,11 +402,12 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             )}
           </div>
+          )}
         </div>
       )}
 
       {/* Subtle notification banner if sign-in had an error */}
-      {signInError && (
+      {!isNativeApp && signInError && (
         <div className="bg-rose-50 text-rose-700 text-xs px-4 py-2 flex items-center justify-between border-t border-rose-100">
           <span>{signInError}</span>
           <button

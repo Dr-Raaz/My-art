@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
-import { Palette, Heart, Shield, Lock } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Palette, Lock } from 'lucide-react';
+import { subscribeToAuth } from '../services/authService';
 
 interface FooterProps {
   onOpenAbout: () => void;
@@ -12,6 +13,15 @@ interface FooterProps {
 }
 
 export const Footer: React.FC<FooterProps> = ({ onOpenAbout, onNavigateAdmin }) => {
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToAuth((state) => {
+      setIsAdmin(state.isAdmin);
+    });
+    return unsubscribe;
+  }, []);
+
   return (
     <footer className="mt-20 border-t border-purple-100 bg-white/70 py-10">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-6 text-center sm:text-left">
@@ -41,14 +51,20 @@ export const Footer: React.FC<FooterProps> = ({ onOpenAbout, onNavigateAdmin }) 
           >
             About
           </button>
-          <span>•</span>
-          <button
-            onClick={onNavigateAdmin}
-            className="hover:text-purple-700 transition-colors cursor-pointer flex items-center gap-1 text-slate-400"
-          >
-            <Lock className="w-3.5 h-3.5" />
-            <span>Administrator Access</span>
-          </button>
+          {/* Administrator link ONLY visible when authenticated user is verified admin */}
+          {isAdmin && (
+            <>
+              <span>•</span>
+              <button
+                onClick={onNavigateAdmin}
+                className="hover:text-purple-700 transition-colors cursor-pointer flex items-center gap-1 text-purple-600 font-bold"
+                aria-label="Administrator Portal"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                <span>Administrator Access</span>
+              </button>
+            </>
+          )}
         </div>
 
         <p className="text-xs text-slate-400">

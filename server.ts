@@ -21,6 +21,10 @@ import {
   generateUploadAuth,
   deleteImageKitFile,
 } from './src/server/imagekit.js';
+import {
+  verifyFirebaseIdToken,
+  ADMIN_EMAIL,
+} from './src/server/firebaseAuth.js';
 
 dotenv.config();
 
@@ -51,21 +55,37 @@ function getClientIp(req: express.Request): string {
   return req.ip || req.socket.remoteAddress || 'unknown-client';
 }
 
-// Helper to enforce valid admin session token on protected endpoints
-function requireAdminAuth(req: express.Request, res: express.Response): boolean {
+// Helper to enforce valid administrator authorization on protected endpoints.
+// Supports Firebase ID tokens (primary) and legacy scrypt session tokens (fallback during migration).
+async function requireAdminAuth(req: express.Request, res: express.Response): Promise<boolean> {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.status(401).json({ error: 'Unauthorized. Admin session token is required.' });
+    res.status(401).json({ error: 'Unauthorized. Administrator authorization token is required.' });
     return false;
   }
 
   const token = authHeader.substring(7);
-  const session = verifyAdminSessionToken(token);
-  if (!session || !session.admin) {
-    res.status(401).json({ error: 'Unauthorized. Admin session is invalid or has expired.' });
-    return false;
+
+  // 1. Primary: Verify Firebase ID token
+  if (token.split('.').length === 3) {
+    const fbVerification = await verifyFirebaseIdToken(token);
+    if (fbVerification.valid) {
+      if (fbVerification.isAdmin) {
+        return true;
+      }
+      res.status(403).json({ error: 'Forbidden. Administrator privileges required.' });
+      return false;
+    }
   }
-  return true;
+
+  // 2. Migration fallback: Verify scrypt HMAC session token
+  const legacySession = verifyAdminSessionToken(token);
+  if (legacySession && legacySession.admin) {
+    return true;
+  }
+
+  res.status(401).json({ error: 'Unauthorized. Valid administrator authentication is required.' });
+  return false;
 }
 
 // API Routes
@@ -156,11 +176,11 @@ app.post('/api/admin/logout', (_req, res) => {
 
 /**
  * Returns authentication parameters for direct browser-to-ImageKit uploads.
- * Requires an active admin session.
+ * Requires an active admin session (Firebase ID token or legacy scrypt session).
  * Never exposes the ImageKit private key.
  */
-app.get('/api/admin/imagekit-auth', (req, res) => {
-  if (!requireAdminAuth(req, res)) return;
+app.get('/api/admin/imagekit-auth', async (req, res) => {
+  if (!(await requireAdminAuth(req, res))) return;
 
   const config = getImageKitConfig();
   if (!config.isConfigured) {
@@ -184,10 +204,10 @@ app.get('/api/admin/imagekit-auth', (req, res) => {
 
 /**
  * Deletes a file from ImageKit given its file ID.
- * Requires an active admin session.
+ * Requires an active admin session (Firebase ID token or legacy scrypt session).
  */
 app.post('/api/admin/delete-imagekit', async (req, res) => {
-  if (!requireAdminAuth(req, res)) return;
+  if (!(await requireAdminAuth(req, res))) return;
 
   const { fileId } = req.body || {};
   if (!fileId || typeof fileId !== 'string' || !fileId.trim()) {
@@ -216,6 +236,21 @@ app.post('/api/admin/delete-imagekit', async (req, res) => {
   }
 });
 
+/**
+ * Server-side endpoint to verify a Firebase ID token.
+ * Confirms whether the token belongs to the authorized administrator.
+ */
+app.get('/api/auth/verify-token', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ valid: false, isAdmin: false, error: 'No authorization token provided.' });
+  }
+
+  const token = authHeader.substring(7);
+  const result = await verifyFirebaseIdToken(token);
+  return res.json(result);
+});
+
 app.get('/api/config-status', (_req, res) => {
   const hasFirebaseApiKey = Boolean(process.env.VITE_FIREBASE_API_KEY);
   const hasFirebaseProject = Boolean(process.env.VITE_FIREBASE_PROJECT_ID);
@@ -225,6 +260,7 @@ app.get('/api/config-status', (_req, res) => {
     firebaseConfigured: hasFirebaseApiKey && hasFirebaseProject,
     imagekitConfigured: ikConfig.isConfigured,
     adminUsername: getAdminCredentials().username,
+    adminEmail: ADMIN_EMAIL,
     appVersion: '1.0.0',
     mode: process.env.NODE_ENV || 'development',
   });
@@ -247,7 +283,7 @@ async function startServer() {
   }
 
   app.listen(PORT, () => {
-    console.log(`Kids Coloring Studio server listening on http://localhost:${PORT}`);
+    console.log(`My Art Studio server listening on http://localhost:${PORT}`);
   });
 }
 

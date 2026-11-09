@@ -37,15 +37,21 @@ import {
 const STORAGE_KEY_CATEGORIES = 'kcs_categories_v1';
 const STORAGE_KEY_ARTWORKS = 'kcs_artworks_v1';
 
+import { getActiveFirebaseIdToken } from './authService';
+
 /**
  * Loads categories from Firestore or fallback storage.
+ * Public queries filter for isActive == true matching security rules.
  */
-export async function getCategories(): Promise<Category[]> {
+export async function getCategories(includeInactive = false): Promise<Category[]> {
   const { db, status } = initFirebase();
 
   if (status.isConfigured && db) {
     try {
-      const q = query(collection(db, 'categories'), orderBy('sortOrder', 'asc'));
+      const q = includeInactive
+        ? query(collection(db, 'categories'), orderBy('sortOrder', 'asc'))
+        : query(collection(db, 'categories'), where('isActive', '==', true), orderBy('sortOrder', 'asc'));
+
       const snapshot = await getDocs(q);
       const list: Category[] = [];
       snapshot.forEach((docSnap) => {
@@ -62,22 +68,27 @@ export async function getCategories(): Promise<Category[]> {
     const saved = localStorage.getItem(STORAGE_KEY_CATEGORIES);
     if (saved) {
       try {
-        return JSON.parse(saved);
+        const list: Category[] = JSON.parse(saved);
+        return includeInactive ? list : list.filter((c) => c.isActive);
       } catch {}
     }
   }
-  return [...INITIAL_CATEGORIES];
+  return includeInactive ? [...INITIAL_CATEGORIES] : INITIAL_CATEGORIES.filter((c) => c.isActive);
 }
 
 /**
  * Loads artworks from Firestore or fallback storage.
+ * Public queries filter for isPublished == true matching security rules.
  */
 export async function getArtworks(includeUnpublished = false): Promise<Artwork[]> {
   const { db, status } = initFirebase();
 
   if (status.isConfigured && db) {
     try {
-      let q = collection(db, 'artworks');
+      const q = includeUnpublished
+        ? collection(db, 'artworks')
+        : query(collection(db, 'artworks'), where('isPublished', '==', true));
+
       const snapshot = await getDocs(q);
       const list: Artwork[] = [];
       snapshot.forEach((docSnap) => {
@@ -216,7 +227,8 @@ export async function deleteArtwork(artworkId: string): Promise<void> {
         : undefined);
 
     if (imagekitFileId) {
-      const adminToken = typeof window !== 'undefined' ? localStorage.getItem('kcs_admin_token') : null;
+      const firebaseIdToken = await getActiveFirebaseIdToken();
+      const adminToken = firebaseIdToken || (typeof window !== 'undefined' ? localStorage.getItem('kcs_admin_token') : null);
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
       };
@@ -308,7 +320,8 @@ export async function uploadArtworkImage(
   });
 
   // 4. Try signed direct browser-to-ImageKit upload
-  const adminToken = typeof window !== 'undefined' ? localStorage.getItem('kcs_admin_token') : null;
+  const firebaseIdToken = await getActiveFirebaseIdToken();
+  const adminToken = firebaseIdToken || (typeof window !== 'undefined' ? localStorage.getItem('kcs_admin_token') : null);
   let imageKitAuth: {
     token: string;
     expire: number;

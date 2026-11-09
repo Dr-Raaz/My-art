@@ -78,6 +78,10 @@
           "type": "string",
           "description": "Path in Firebase Storage."
         },
+        "imagekitFileId": {
+          "type": "string",
+          "description": "Unique file identifier in ImageKit media library."
+        },
         "difficulty": {
           "type": "string",
           "enum": ["easy", "medium", "hard"],

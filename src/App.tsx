@@ -13,6 +13,12 @@ import {
   saveArtwork,
   deleteArtwork,
 } from './services/dataService';
+import {
+  initAuthListener,
+  subscribeToAuth,
+  signOutUser,
+  type AuthState,
+} from './services/authService';
 import { Header } from './components/Header';
 import { Hero } from './components/Hero';
 import { CategoryList } from './components/CategoryList';
@@ -62,10 +68,22 @@ export default function App() {
   const [transitionPhase, setTransitionPhase] = useState<StudioTransitionPhase>('idle');
   const exitTimerRef = useRef<number | null>(null);
 
-  // Admin auth state
+  // Admin auth state (Google Firebase Auth + legacy scrypt token for migration)
+  const [googleAuth, setGoogleAuth] = useState<AuthState>({
+    user: null,
+    isAdmin: false,
+    isLoading: true,
+    error: null,
+  });
   const [adminToken, setAdminToken] = useState<string | null>(null);
   const [adminUsername, setAdminUsername] = useState<string>('my_art');
   const [isLoadingData, setIsLoadingData] = useState(true);
+
+  // Combined administrator check
+  const isAdministrator = Boolean(googleAuth.isAdmin || adminToken);
+  const effectiveAdminUsername = googleAuth.isAdmin
+    ? googleAuth.user?.displayName || googleAuth.user?.email || 'raazprasai1996@gmail.com'
+    : adminUsername;
 
   // Reliable scroll restoration helper
   const restoreScrollPosition = useCallback((targetScroll: number) => {
@@ -143,6 +161,19 @@ export default function App() {
     }
   }, []);
 
+  // Initialize Firebase Auth listener and check existing sessions
+  useEffect(() => {
+    initAuthListener();
+    const unsubscribe = subscribeToAuth((state) => {
+      setGoogleAuth(state);
+      // If user just authenticated as administrator and currently at login screen, transition to dashboard
+      if (state.isAdmin && window.location.pathname.includes('/admin/login')) {
+        setCurrentView('admin-dashboard');
+      }
+    });
+    return unsubscribe;
+  }, []);
+
   // Check URL pathname and verify existing admin session on mount
   useEffect(() => {
     if ('scrollRestoration' in window.history) {
@@ -151,7 +182,7 @@ export default function App() {
 
     loadData();
 
-    // Check stored admin session token
+    // Check stored legacy admin session token
     const token = localStorage.getItem('kcs_admin_token');
     const storedUser = localStorage.getItem('kcs_admin_user') || 'my_art';
 
@@ -177,7 +208,7 @@ export default function App() {
 
     // Handle initial route
     const path = window.location.pathname;
-    if (path.includes('/admin/dashboard') || (path.includes('/admin') && token)) {
+    if (path.includes('/admin/dashboard')) {
       setCurrentView('admin-dashboard');
     } else if (path.includes('/admin/login') || path === '/admin') {
       setCurrentView('admin-login');
@@ -302,11 +333,9 @@ export default function App() {
 
   // Internal Back button handler inside ColoringStudio
   const handleStudioBack = useCallback(() => {
-    // Calling history.back() triggers popstate, unifying hardware back, swipe back, and in-app back
     if (window.location.hash.startsWith('#color-') || window.history.state?.view === 'studio') {
       window.history.back();
     } else {
-      // Fallback if opened without history state
       startExitTransition(savedGalleryScrollRef.current);
     }
   }, [startExitTransition]);
@@ -344,6 +373,9 @@ export default function App() {
   const handleAdminLogout = async () => {
     try {
       await fetch('/api/admin/logout', { method: 'POST' });
+    } catch {}
+    try {
+      await signOutUser();
     } catch {}
     localStorage.removeItem('kcs_admin_token');
     localStorage.removeItem('kcs_admin_user');
@@ -489,14 +521,14 @@ export default function App() {
         />
       ) : currentView === 'admin-dashboard' ? (
         /* Admin Dashboard View (Protected) */
-        !adminToken ? (
+        !isAdministrator ? (
           <AdminLogin
             onLoginSuccess={handleAdminLoginSuccess}
             onBackToSite={() => navigate('home')}
           />
         ) : (
           <AdminDashboard
-            username={adminUsername}
+            username={effectiveAdminUsername}
             categories={categories}
             artworks={artworks}
             onSaveCategory={handleSaveCategory}
@@ -518,7 +550,7 @@ export default function App() {
             currentView={currentView}
             onNavigate={(view) => {
               if (view === 'admin') {
-                navigate(adminToken ? 'admin-dashboard' : 'admin-login');
+                navigate(isAdministrator ? 'admin-dashboard' : 'admin-login');
               } else {
                 navigate('home');
               }
@@ -560,7 +592,7 @@ export default function App() {
 
           <Footer
             onOpenAbout={() => setIsAboutOpen(true)}
-            onNavigateAdmin={() => navigate(adminToken ? 'admin-dashboard' : 'admin-login')}
+            onNavigateAdmin={() => navigate(isAdministrator ? 'admin-dashboard' : 'admin-login')}
           />
         </div>
       )}
